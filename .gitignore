@@ -5,4 +5,5 @@ data/
 *.db
 .venv/
 venv/
-.claude/
+# .claude/ - Commented out to allow orchestration files
+# Keep .claude/orchestration.json and related files in version control

@@ -1,0 +1,341 @@
+{
+  "metadata": {
+    "workflow_version": "v2.1",
+    "last_updated": "2026-02-11",
+    "source": "docs/WORKFLOW.md",
+    "current_phase": "Phase 1",
+    "auto_continue_enabled": true
+  },
+  "phases": [
+    {
+      "id": "phase_1",
+      "name": "Phase 1 - Core Automation Pipeline",
+      "estimated_hours": 26,
+      "status": "pending",
+      "steps": [
+        {
+          "id": "1.1",
+          "name": "Config Infrastructure",
+          "status": "pending",
+          "estimated_hours": 2,
+          "description": "Create YAML config files for job preferences, user profile, projects, proposal guidelines, and email settings",
+          "tasks": [
+            "Edit .gitignore to add config/email_config.yaml, data/emails/, .streamlit/secrets.toml",
+            "Edit config.py to add CONFIG_DIR, EMAILS_DIR, create dirs on import",
+            "Verify requirements.txt has pyyaml>=6.0 and pytest>=7.0",
+            "Create config/job_preferences.yaml (categories, skills, budget, client criteria)",
+            "Create config/user_profile.yaml (bio, experience, specializations, rate info)",
+            "Create config/projects.yaml (portfolio projects with tech + outcomes)",
+            "Create config/proposal_guidelines.yaml (tone, length, sections, avoid phrases)",
+            "Create config/email_config.yaml (SMTP settings, notification rules)"
+          ],
+          "files_to_edit": [".gitignore", "config.py", "requirements.txt"],
+          "files_to_create": [
+            "config/job_preferences.yaml",
+            "config/user_profile.yaml",
+            "config/projects.yaml",
+            "config/proposal_guidelines.yaml",
+            "config/email_config.yaml"
+          ],
+          "verification": [
+            "ls config/*.yaml | wc -l  # Should be 5",
+            "python -c \"import yaml; [yaml.safe_load(open(f'config/{f}')) for f in ['job_preferences.yaml','user_profile.yaml','projects.yaml','proposal_guidelines.yaml','email_config.yaml']]\"",
+            "grep CONFIG_DIR config.py",
+            "grep pyyaml requirements.txt",
+            "grep 'config/email_config.yaml' .gitignore"
+          ],
+          "rollback": "Delete config/ directory; revert .gitignore and config.py changes"
+        },
+        {
+          "id": "1.2",
+          "name": "Proposals Table + DB Functions",
+          "status": "pending",
+          "estimated_hours": 3,
+          "description": "Add proposals table to SQLite database with foreign key to jobs table and implement CRUD functions",
+          "tasks": [
+            "Add PRAGMA foreign_keys = ON in get_connection()",
+            "Add classification columns to init_db() using ALTER TABLE IF NOT EXISTS",
+            "Create proposals table in init_db() with all required columns",
+            "Implement insert_proposal() function",
+            "Implement get_proposals() function",
+            "Implement update_proposal_status() function",
+            "Implement update_proposal_text() function",
+            "Implement get_proposal_stats() function",
+            "Implement proposal_exists() function",
+            "Implement get_all_job_uids() function"
+          ],
+          "files_to_edit": ["database/db.py"],
+          "verification": [
+            "grep 'CREATE TABLE IF NOT EXISTS proposals' database/db.py",
+            "grep 'PRAGMA foreign_keys' database/db.py",
+            "python -c \"from database.db import init_db, insert_proposal, get_proposals, get_all_job_uids; init_db(); print('✅ proposals table created')\""
+          ],
+          "rollback": "DROP TABLE IF EXISTS proposals; revert database/db.py to git HEAD"
+        },
+        {
+          "id": "1.3",
+          "name": "Job Preference Matcher",
+          "status": "pending",
+          "estimated_hours": 4,
+          "description": "Create matcher.py to score jobs based on preferences with category, skills, budget, and client quality scoring",
+          "tasks": [
+            "Create matcher.py at project root",
+            "Implement load_preferences() to load job_preferences.yaml",
+            "Implement score_job() with formula: category*30 + required_skills*25 + nice_skills*10 + budget*20 + client*15",
+            "Handle edge cases: unclassified jobs, null fields, empty skills",
+            "Implement exclusion keyword check (auto-reject, score=0)",
+            "Implement get_matching_jobs() to filter by threshold"
+          ],
+          "files_to_create": ["matcher.py"],
+          "verification": [
+            "test -f matcher.py",
+            "python -c \"from matcher import load_preferences, score_job, get_matching_jobs; p = load_preferences(); print('✅ matcher loaded')\"",
+            "pytest tests/test_matcher.py"
+          ],
+          "rollback": "Delete matcher.py"
+        },
+        {
+          "id": "1.4",
+          "name": "Proposal Generator",
+          "status": "pending",
+          "estimated_hours": 4,
+          "description": "Create proposal_generator.py to generate proposals using xAI Grok API with rate limiting and retry logic",
+          "tasks": [
+            "Create proposal_generator.py at project root",
+            "Load user_profile.yaml, projects.yaml, proposal_guidelines.yaml",
+            "Implement select_relevant_projects() to pick 1-2 projects by tech overlap",
+            "Implement generate_proposal() with API call to xAI Grok",
+            "Implement rate limiting: max 20/day",
+            "Implement retry logic: 3 attempts with exponential backoff (5s, 15s, 60s)",
+            "Implement generate_proposals_batch() to process multiple jobs",
+            "Add clear error messages for missing API key or API failures"
+          ],
+          "files_to_create": ["proposal_generator.py"],
+          "verification": [
+            "test -f proposal_generator.py",
+            "python -c \"from proposal_generator import select_relevant_projects, generate_proposal; print('✅ generator loaded')\""
+          ],
+          "rollback": "Delete proposal_generator.py"
+        },
+        {
+          "id": "1.5",
+          "name": "Monitor CLI Command",
+          "status": "pending",
+          "estimated_hours": 3,
+          "description": "Add 'monitor' command to main.py that orchestrates scrape → classify → match → generate pipeline with lock file and health check",
+          "tasks": [
+            "Add monitor subcommand to argparse with --new and --dry-run flags",
+            "Implement cmd_monitor_new() pipeline: scrape → delta detect → classify → match → generate",
+            "Implement delta detection: new_uids = scraped_uids - get_all_job_uids()",
+            "Implement --dry-run mode: scrape + match but skip API calls",
+            "Add logging to data/monitor.log",
+            "Implement PID-based lock file at data/monitor.lock",
+            "Implement partial failure handling with failed status tracking",
+            "Write data/last_run_status.json health check file after every run"
+          ],
+          "files_to_edit": ["main.py"],
+          "verification": [
+            "python main.py monitor --help",
+            "python main.py monitor --new --dry-run",
+            "test -f data/monitor.log",
+            "test -f data/last_run_status.json",
+            "python main.py monitor --new --dry-run & python main.py monitor --new --dry-run  # Second should exit with 'already running'"
+          ],
+          "rollback": "Revert main.py to git HEAD; delete data/monitor.lock, data/monitor.log, data/last_run_status.json"
+        },
+        {
+          "id": "1.6",
+          "name": "Streamlit Dashboard - Proposals Tab",
+          "status": "pending",
+          "estimated_hours": 6,
+          "description": "Add Proposals tab to existing Streamlit dashboard with job browsing, proposal review, and monitor health status",
+          "tasks": [
+            "Add Proposals tab to dashboard/app.py alongside Jobs and Analytics",
+            "Update Jobs tab to use matcher.score_job() for unified scoring",
+            "Implement proposal cards with status badges in Proposals tab",
+            "Add Approve/Reject buttons with state machine validation",
+            "Display match scores and reasons from match_reasons JSON",
+            "Add monitor health header reading last_run_status.json",
+            "Show warning if last run >8 hours stale or status is failure",
+            "Import and use dashboard/analytics.py functions",
+            "Add Plotly charts to Analytics tab",
+            "Add date range selector and CSV export"
+          ],
+          "files_to_edit": ["dashboard/app.py"],
+          "verification": [
+            "grep 'st.tabs' dashboard/app.py",
+            "streamlit run dashboard/app.py  # Manual check: starts without errors",
+            "grep -r 'reporter/' docs/PRD.md docs/WORKFLOW.md  # Should return no matches"
+          ],
+          "rollback": "Revert dashboard/app.py to git HEAD"
+        },
+        {
+          "id": "1.7",
+          "name": "Unit & Integration Tests",
+          "status": "pending",
+          "estimated_hours": 4,
+          "description": "Create comprehensive test suite covering matcher, database, configs, proposal generator, and full pipeline",
+          "tasks": [
+            "Update tests/test_matcher.py with 8 tests",
+            "Update tests/test_db_proposals.py with 4 tests",
+            "Update tests/test_config.py with 3 tests",
+            "Create tests/test_proposal_generator.py with 5 tests",
+            "Create tests/test_monitor_pipeline.py with 3 integration tests",
+            "Create tests/fixtures/ directory",
+            "Create tests/fixtures/sample_jobs.json with 5 fixture jobs",
+            "Create tests/fixtures/sample_config/ with test YAML files"
+          ],
+          "files_to_create": [
+            "tests/test_proposal_generator.py",
+            "tests/test_monitor_pipeline.py",
+            "tests/fixtures/sample_jobs.json",
+            "tests/fixtures/sample_config/"
+          ],
+          "files_to_edit": [
+            "tests/test_matcher.py",
+            "tests/test_db_proposals.py",
+            "tests/test_config.py"
+          ],
+          "verification": [
+            "pytest tests/ -v  # Must exit with code 0, 0 failures, 0 errors, 0 skips",
+            "test -d tests/fixtures"
+          ],
+          "rollback": "Delete new test files from tests/; delete tests/fixtures/ directory"
+        },
+        {
+          "id": "phase_1_gate",
+          "name": "Phase 1 Gate - All Tests Must Pass",
+          "status": "pending",
+          "estimated_hours": 0,
+          "description": "Verify all Phase 1 steps are complete and all tests pass before proceeding to Phase 2",
+          "verification": [
+            "pytest tests/ -v  # Exit code 0",
+            "python main.py monitor --help",
+            "streamlit run dashboard/app.py  # Starts without errors"
+          ],
+          "blocking": true
+        }
+      ]
+    },
+    {
+      "id": "phase_2",
+      "name": "Phase 2 - UX Enhancements",
+      "estimated_hours": 9,
+      "status": "blocked",
+      "blocked_by": "phase_1_gate",
+      "steps": [
+        {
+          "id": "2.1",
+          "name": "Inline Proposal Editing",
+          "status": "pending",
+          "estimated_hours": 2,
+          "description": "Add text editor in Proposals tab for inline editing with word count and save functionality",
+          "files_to_edit": ["dashboard/app.py"],
+          "verification": [
+            "grep 'st.text_area' dashboard/app.py",
+            "sqlite3 data/jobs.db \"SELECT user_edited FROM proposals LIMIT 1\""
+          ],
+          "rollback": "Revert dashboard/app.py Proposals tab section to Step 1.6 state"
+        },
+        {
+          "id": "2.2",
+          "name": "Copy-to-Clipboard & Full Status Workflow",
+          "status": "pending",
+          "estimated_hours": 2,
+          "description": "Add copy button and implement full status state machine with bulk actions",
+          "files_to_edit": ["dashboard/app.py"],
+          "verification": [
+            "# Manual: Dashboard has copy functionality and status buttons",
+            "# Manual: Status transitions persist after page refresh"
+          ],
+          "rollback": "Revert dashboard/app.py clipboard/status section"
+        },
+        {
+          "id": "2.3",
+          "name": "Email Notifier",
+          "status": "pending",
+          "estimated_hours": 4,
+          "description": "Create email notification system using Gmail SMTP with HTML templates and fallback to file save",
+          "files_to_create": ["notifier.py"],
+          "verification": [
+            "test -f notifier.py",
+            "python -c \"from notifier import send_notification; print('✅ notifier loaded')\"",
+            "# Test fallback: creates HTML file in data/emails/ and status JSON"
+          ],
+          "rollback": "Delete notifier.py; delete data/emails/ directory"
+        },
+        {
+          "id": "2.4",
+          "name": "Wire Email into Monitor",
+          "status": "pending",
+          "estimated_hours": 1,
+          "description": "Integrate email notifier into monitor pipeline to send notifications after proposal generation",
+          "files_to_edit": ["main.py"],
+          "verification": [
+            "grep 'from notifier import' main.py",
+            "python main.py monitor --new --dry-run  # Email skipped in dry-run"
+          ],
+          "rollback": "Revert main.py monitor function to Step 1.5 state"
+        }
+      ]
+    },
+    {
+      "id": "phase_3",
+      "name": "Phase 3 - Production Readiness",
+      "estimated_hours": 9,
+      "status": "blocked",
+      "blocked_by": "phase_2",
+      "steps": [
+        {
+          "id": "3.1",
+          "name": "Streamlit Cloud Deployment Prep",
+          "status": "pending",
+          "estimated_hours": 3,
+          "description": "Configure Streamlit for cloud deployment with read-only mode and secrets management",
+          "files_to_create": [".streamlit/config.toml", ".streamlit/secrets.toml.example"],
+          "files_to_edit": ["dashboard/app.py", ".gitignore"],
+          "verification": [
+            "test -d .streamlit",
+            "grep 'config/email_config.yaml' .gitignore",
+            "DASHBOARD_READ_ONLY=1 streamlit run dashboard/app.py  # Edit buttons hidden"
+          ],
+          "rollback": "Delete .streamlit/ directory; revert dashboard/app.py read-only changes"
+        },
+        {
+          "id": "3.2",
+          "name": "Ollama Fallback",
+          "status": "pending",
+          "estimated_hours": 3,
+          "description": "Add support for local Ollama models as fallback to xAI API",
+          "files_to_edit": ["classifier/ai.py", "proposal_generator.py"],
+          "verification": [
+            "grep 'OLLAMA_BASE_URL' classifier/ai.py",
+            "grep 'OLLAMA_BASE_URL' proposal_generator.py"
+          ],
+          "rollback": "Revert Ollama changes in classifier/ai.py and proposal_generator.py"
+        },
+        {
+          "id": "3.3",
+          "name": "Quality Feedback Loop",
+          "status": "pending",
+          "estimated_hours": 3,
+          "description": "Add user rating system and acceptance rate analytics to track proposal quality",
+          "files_to_edit": ["dashboard/app.py", "database/db.py"],
+          "verification": [
+            "sqlite3 data/jobs.db \"PRAGMA table_info(proposals)\" | grep user_rating",
+            "# Manual: Dashboard shows rating input and acceptance chart"
+          ],
+          "rollback": "Revert rating/feedback changes in dashboard/app.py and database/db.py"
+        }
+      ]
+    }
+  ],
+  "global_definition_of_done": [
+    "Code passes python -m py_compile for all modified .py files",
+    "No new warnings or errors in pytest output",
+    "Public functions have docstrings (one-line minimum)",
+    "Config files validate with yaml.safe_load() without errors",
+    "No secrets, API keys, or credentials committed to version control",
+    "All verification commands listed in step pass"
+  ]
+}
