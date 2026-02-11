@@ -198,7 +198,7 @@ Classification Fields: category, category_confidence, summary,
 **Description**: Interactive Streamlit web application for daily job hunting with real-time filtering, sorting, and relevance scoring.
 
 **Requirements**:
-- **F4.1**: Streamlit-based web application running locally (`streamlit run dashboard.py`)
+- **F4.1**: Streamlit-based web application running locally (`streamlit run dashboard/app.py`)
 - **F4.2**: Auto-refresh capability with configurable TTL (default: 5 minutes)
 - **F4.3**: Real-time filtering by category, job type, budget, experience level, client quality
 - **F4.4**: Multi-select and slider widgets for intuitive filtering
@@ -220,7 +220,7 @@ Uses the F7 match scoring algorithm (0-100 scale) for all scoring.
 The Jobs tab displays the same match_score used for proposal generation.
 This eliminates confusion from having two different scoring systems.
 ```
-**Note**: The legacy display scoring algorithm (`skill_matches * 10 + budget_score + ...`) from dashboard_v2.py is deprecated and replaced by F7's `match_score` formula. One scoring system, used everywhere.
+**Note**: The legacy display scoring algorithm (`skill_matches * 10 + budget_score + ...`) from `dashboard/app.py` is deprecated and replaced by F7's `match_score` formula. One scoring system, used everywhere.
 
 **Technical Implementation**:
 - `@st.cache_data(ttl=300)` for database queries
@@ -873,7 +873,7 @@ Git push DB
 2. Install dependencies (`pip install -r requirements.txt streamlit`)
 3. Install Playwright Chromium (`playwright install chromium`)
 4. Set `XAI_API_KEY` in environment
-5. Optionally customize skill profile in `dashboard.py` config section
+5. Optionally customize skill profile in `dashboard/app.py` config section
 
 **Time**: 5-10 minutes
 **Frequency**: Once
@@ -935,7 +935,7 @@ Git push DB
 ### Workflow 4: AI Classification (Legacy - Optional)
 **Note**: Classification now happens automatically in Workflow 2. This is only for backfilling historical jobs.
 
-1. Run `python -m classifier.ai_classify`
+1. Run `python -m classifier.ai`
 2. System processes all unclassified jobs in batches
 3. Grok AI extracts categories, tools, summaries
 4. Results saved to database
@@ -951,7 +951,7 @@ Git push DB
 
 **Morning Routine** (after receiving email digest):
 1. Check email: "3 New Upwork Proposals Generated - Feb 11"
-2. Run `streamlit run dashboard.py` (or keep running in background)
+2. Run `streamlit run dashboard/app.py` (or keep running in background)
 3. Browser opens to http://localhost:8501
 4. Navigate to **"Proposals" tab**
 5. Review proposals sorted by match score (highest first)
@@ -1022,7 +1022,7 @@ Git push DB
          │                                       │
          │                                       ▼
          ├──► Job Classifier ────────────► Grok API / Ollama
-         │    - ai_classify.py                 │
+         │    - classifier/ai.py                │
          │    - Batch processing                 ▼
          │                                Classified Jobs
          │                                       │
@@ -1053,7 +1053,7 @@ Git push DB
          │                                       │
          │                                       ▼
          └──► Streamlit Dashboard       ┌────► Local Dashboard (:8501)
-              - dashboard.py            │       - Full functionality
+              - dashboard/app.py        │       - Full functionality
               - Jobs Tab                │       - Proposal editing
               - Proposals Tab           │       - Approve/reject
               - Analytics Tab           │
@@ -1763,7 +1763,7 @@ The following features are explicitly **not included** in the current version:
 16. DevOps / MLOps / Infrastructure
 
 ### C. Default Skill Profile
-See `reporter/dashboard_v2.py` lines 12-31 for the full profile (50+ skills including Python, JavaScript, LangChain, RAG, OpenAI API, React, Next.js, FastAPI, AWS, etc.)
+See `dashboard/app.py` lines 12-31 for the full profile (50+ skills including Python, JavaScript, LangChain, RAG, OpenAI API, React, Next.js, FastAPI, AWS, etc.)
 
 ### D. References
 - Upwork Search URL: `https://www.upwork.com/nx/search/jobs/`
@@ -1775,5 +1775,5 @@ See `reporter/dashboard_v2.py` lines 12-31 for the full profile (50+ skills incl
 ---
 
 **Document Prepared By**: Claude Sonnet 4.5
-**Review Status**: Reviewed by spec panel Round 6 — Feb 11, 2026 (7 fixes applied: R1-R7 — example proposals, retry timing, health check, integration tests, match_reasons structure, FK safety, status state machine)
+**Review Status**: File reference audit — Feb 11, 2026 (corrected all stale paths: reporter/ → dashboard/, ai_classify.py → ai.py, classify.py → rules.py, analyzer/ → dashboard/analytics.py). Prior: spec panel Round 6 (R1-R7)
 **Next Review Date**: 2026-03-11
