@@ -9,7 +9,7 @@ import plotly.express as px
 import pandas as pd
 
 import config
-from analyzer.analyze import (
+from dashboard.analytics import (
     jobs_to_dataframe,
     skill_frequency,
     job_type_distribution,

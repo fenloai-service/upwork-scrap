@@ -9,7 +9,7 @@ Upwork job scraper and analyzer for AI-related freelance jobs. Scrapes public Up
 ## Commands
 
 ```bash
-# Setup
+# Setup (or use: make setup)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
@@ -21,13 +21,13 @@ python main.py scrape --full          # All 15 keywords, all pages
 python main.py scrape --new           # Daily: page 1-2 per keyword
 
 # Classification
-export XAI_API_KEY="xai-..."
-python -m classifier.ai_classify      # AI classify unprocessed jobs (Grok)
-python -m classifier.ai_classify --status  # Show classification progress
+export XAI_API_KEY="xai-..."          # See .env.example
+python -m classifier.ai               # AI classify unprocessed jobs (Grok)
+python -m classifier.ai --status      # Show classification progress
 
 # Dashboard & Analysis
-streamlit run reporter/dashboard_v2.py  # Launch live dashboard (auto-opens browser)
-python main.py stats                  # Terminal summary
+streamlit run dashboard/app.py         # Launch live dashboard (auto-opens browser)
+python main.py stats                   # Terminal summary
 
 # Monitor background scrape
 tail -f data/scrape.log
@@ -35,18 +35,49 @@ tail -f data/scrape.log
 # Quick DB queries
 python -c "from database.db import get_job_count, init_db; init_db(); print(get_job_count())"
 sqlite3 data/jobs.db "SELECT category, COUNT(*) FROM jobs WHERE category != '' GROUP BY category ORDER BY COUNT(*) DESC"
+
+# Makefile shortcuts
+make scrape-new        # Daily scrape
+make scrape-full       # Full scrape
+make classify          # AI classification
+make dashboard         # Launch Streamlit
+make stats             # Terminal summary
+make test              # Run tests
 ```
 
 ## Architecture
 
-**Data flow**: `main.py` CLI → `scraper/browser.py` (Chrome CDP on port 9222) → `scraper/search_scraper.py` (JS DOM extraction) → `database/db.py` (SQLite upsert) → `classifier/ai_classify.py` (Grok API) → `dashboard.py` (Streamlit + Plotly live UI).
+**Data flow**: `main.py` CLI → `scraper/browser.py` (Chrome CDP on port 9222, Cloudflare warmup) → `scraper/search.py` (JS DOM extraction) → `database/db.py` (SQLite upsert) → `classifier/ai.py` (Grok API) → `dashboard/app.py` (Streamlit + Plotly live UI).
+
+**Project structure**:
+```
+main.py                 # CLI entry point (scrape, report, dashboard, stats)
+config.py               # All configuration constants
+scraper/
+  browser.py            # Chrome CDP connection, Cloudflare warmup, human-like delays
+  search.py             # Search page scraping, JS extraction
+database/
+  db.py                 # SQLite init, upsert, queries
+classifier/
+  rules.py              # Rule-based classification (keyword matching)
+  ai.py                 # AI classification (Grok/xAI API)
+dashboard/
+  app.py                # Live Streamlit dashboard
+  analytics.py          # DataFrame analytics (skill freq, distributions)
+  html_report.py        # Static HTML report generator (legacy)
+tests/
+  conftest.py           # Shared fixtures
+  test_*.py             # Test files
+scripts/                # One-off utilities (not part of main pipeline)
+docs/                   # PRD, workflow documentation
+```
 
 **Key design decisions**:
 - **Chrome CDP, not Playwright's bundled Chromium** — real Chrome passes Cloudflare; Playwright's Chromium gets blocked. Browser connects via `connect_over_cdp("http://127.0.0.1:9222")`. Persistent profile in `data/chrome_profile/` caches Cloudflare tokens between runs.
 - **Incremental DB saves** — `scrape_keyword()` accepts a `save_fn` callback (typically `upsert_jobs`) called after each page, so data survives crashes. The `--start-page` flag enables resuming.
 - **No login required** — all data comes from public search result pages. User's Upwork freelancer account is never exposed.
-- **JS-based extraction** — `EXTRACT_JOBS_JS` in `search_scraper.py` runs in-browser JavaScript using `data-test` attribute selectors (e.g., `article[data-test="JobTile"]`, `[data-test="TokenClamp JobAttrs"]`).
-- **Two-stage classification** — optional rule-based classification (`classifier/classify.py`) for quick categorization, followed by AI-powered classification (`classifier/ai_classify.py` using Grok AI) that adds structured categories, key tools, and single-sentence summaries. Batch processing with 20 jobs per API call.
+- **JS-based extraction** — `EXTRACT_JOBS_JS` in `scraper/search.py` runs in-browser JavaScript using `data-test` attribute selectors (e.g., `article[data-test="JobTile"]`, `[data-test="TokenClamp JobAttrs"]`).
+- **Two-stage classification** — optional rule-based classification (`classifier/rules.py`) for quick categorization, followed by AI-powered classification (`classifier/ai.py` using Grok AI) that adds structured categories, key tools, and single-sentence summaries. Batch processing with 20 jobs per API call.
 - **Live Streamlit dashboard** — real-time web interface with auto-refresh (5-min TTL), instant filtering, no HTML regeneration needed. Runs on localhost:8501.
 
 ## Database Schema
@@ -69,16 +100,16 @@ SQLite at `data/jobs.db`. Primary key is `uid` (Upwork job ID). Upsert preserves
 
 Two-stage approach (both optional):
 
-1. **Rule-based** (`classifier/classify.py`) — keyword matching on title/description/skills with weighted scoring. 16 categories including AI web app, chatbot, agent, RAG, ML model, computer vision, NLP, data work, automation, pure web dev, mobile, consulting, voice/speech, other. Returns `(category_key, confidence)`.
+1. **Rule-based** (`classifier/rules.py`) — keyword matching on title/description/skills with weighted scoring. 16 categories including AI web app, chatbot, agent, RAG, ML model, computer vision, NLP, data work, automation, pure web dev, mobile, consulting, voice/speech, other. Returns `(category_key, confidence)`.
 
-2. **AI-powered** (`classifier/ai_classify.py`) — uses Grok AI (xAI) to classify jobs in batches of 20. Requires `XAI_API_KEY`. Outputs structured JSON with:
+2. **AI-powered** (`classifier/ai.py`) — uses Grok AI (xAI) to classify jobs in batches of 20. Requires `XAI_API_KEY`. Outputs structured JSON with:
    - `categories`: 1-3 labels (e.g., "Build AI Web App / SaaS", "RAG / Document AI")
    - `key_tools`: 2-5 specific technologies (e.g., "LangChain", "Pinecone", "Next.js" — NOT generic like "Python", "AI")
    - `ai_summary`: one sentence describing the work (verb-first, max 120 chars)
 
 Results saved to `data/classified_results.jsonl` and upserted back into DB. The AI classifier only processes jobs where `ai_summary` is empty.
 
-**Alternative**: `remote_classify_v2.py` supports local Ollama models (Mistral 7B) for offline classification without API costs.
+**Alternative**: `scripts/remote_classify_v2.py` supports local Ollama models (Mistral 7B) for offline classification without API costs.
 
 ## Config
 
@@ -91,11 +122,11 @@ Results saved to `data/classified_results.jsonl` and upserted back into DB. The 
 
 ## Cloudflare Handling
 
-`warmup_cloudflare()` in `main.py` navigates to a test URL first. If the page title contains "Just a moment..." it retries up to 6 times. On first run with a fresh Chrome profile, the user may need to manually solve a Turnstile challenge in the browser window. Subsequent runs reuse cached tokens from the persistent Chrome profile at `data/chrome_profile/`.
+`warmup_cloudflare()` in `scraper/browser.py` navigates to a test URL first. If the page title contains "Just a moment..." it retries up to 6 times. On first run with a fresh Chrome profile, the user may need to manually solve a Turnstile challenge in the browser window. Subsequent runs reuse cached tokens from the persistent Chrome profile at `data/chrome_profile/`.
 
 ## Dashboard
 
-**Streamlit Dashboard** (`dashboard.py`) — live web application (localhost:8501) with:
+**Streamlit Dashboard** (`dashboard/app.py`) — live web application (localhost:8501) with:
 - Real-time filtering (category, job type, budget, experience, search)
 - Auto-refresh every 5 minutes (configurable TTL)
 - Instant filter updates (no page reload)
@@ -106,14 +137,15 @@ Results saved to `data/classified_results.jsonl` and upserted back into DB. The 
 - CSV export of filtered results
 - No HTML regeneration needed—always shows latest data
 
-Run with `streamlit run reporter/dashboard_v2.py`. Dashboard stays open and updates automatically.
+Run with `streamlit run dashboard/app.py`. Dashboard stays open and updates automatically.
 
 ## Legacy / Utility Scripts
 
-These files at the project root are one-off utilities from early development. They are **not part of the main pipeline** and can be safely ignored or deleted:
+One-off utilities from early development live in `scripts/`. They are **not part of the main pipeline**:
 
-- `classify_with_opus.py` — one-time classification using Claude Opus (superseded by `classifier/ai_classify.py`)
-- `remote_classify.py` / `remote_classify_v2.py` — remote/Ollama classification experiments
-- `import_classifications.py` / `import_results.py` — one-time data import scripts
-- `test_classify.py` — ad-hoc classification test (not part of `tests/` suite)
-- `check_classification.sh` — shell script to check classification progress
+- `scripts/classify_with_opus.py` — one-time classification using Claude Opus
+- `scripts/remote_classify.py` / `remote_classify_v2.py` — remote/Ollama classification experiments
+- `scripts/import_classifications.py` / `import_results.py` — one-time data import scripts
+- `scripts/test_classify.py` — ad-hoc classification test
+- `scripts/check_classification.sh` — shell script to check classification progress
+- `scripts/summarize.py` — standalone job summarization script

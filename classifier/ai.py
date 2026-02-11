@@ -3,8 +3,8 @@ Classify jobs using Grok (xAI) API.
 
 Usage:
     export XAI_API_KEY="xai-..."
-    python -m classifier.ai_classify          # Classify all unprocessed jobs
-    python -m classifier.ai_classify --status  # Show progress
+    python -m classifier.ai          # Classify all unprocessed jobs
+    python -m classifier.ai --status  # Show progress
 """
 
 import sys

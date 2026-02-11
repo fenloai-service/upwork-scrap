@@ -19,44 +19,10 @@ from playwright.async_api import async_playwright
 
 import config
 from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count
-from scraper.browser import launch_chrome_and_connect, get_page, human_delay
-from scraper.search_scraper import scrape_keyword, scrape_single_url
-from reporter.html_report import generate_report
-from reporter.dashboard_v2 import generate_dashboard
-
-
-async def warmup_cloudflare(page):
-    """Navigate to Upwork once so Cloudflare tokens get cached in the profile."""
-    print("Warming up browser (Cloudflare pass)...")
-    try:
-        await page.goto("https://www.upwork.com/nx/search/jobs/?q=test&per_page=10", wait_until="domcontentloaded")
-    except Exception:
-        pass
-
-    # Wait for Cloudflare to resolve — user may need to click if Turnstile appears
-    for attempt in range(6):
-        try:
-            await page.wait_for_selector('article[data-test="JobTile"]', timeout=8000)
-            print("✓ Cloudflare passed — browser is ready.\n")
-            return True
-        except Exception:
-            title = await page.title()
-            if attempt == 0:
-                print("  Cloudflare challenge detected. If a checkbox appears in the browser, click it.")
-            print(f"  Waiting... ({attempt+1}/6) — page title: '{title[:40]}'")
-            await asyncio.sleep(5)
-
-    # Final check
-    title = await page.title()
-    if "search" in title.lower() or "upwork" in title.lower():
-        print("✓ Browser appears ready.\n")
-        return True
-
-    print("⚠ Could not pass Cloudflare automatically.")
-    print("  The browser window is open — please solve the challenge manually,")
-    print("  then press Enter here to continue...")
-    await asyncio.get_event_loop().run_in_executor(None, input)
-    return True
+from scraper.browser import launch_chrome_and_connect, get_page, human_delay, warmup_cloudflare
+from scraper.search import scrape_keyword, scrape_single_url
+from dashboard.html_report import generate_report
+from dashboard.app import generate_dashboard
 
 
 async def cmd_scrape_url(url: str):
@@ -186,7 +152,7 @@ def cmd_stats():
         print("No jobs in database.")
         return
 
-    from analyzer.analyze import jobs_to_dataframe, generate_summary
+    from dashboard.analytics import jobs_to_dataframe, generate_summary
     df = jobs_to_dataframe(jobs)
     summary = generate_summary(df)
 

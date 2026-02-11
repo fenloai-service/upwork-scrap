@@ -730,5 +730,5 @@ function renderCharts() {{
 
 
 if __name__ == "__main__":
-    from classifier.classify import CATEGORIES as CAT_LIST
+    from classifier.rules import CATEGORIES as CAT_LIST
     print(f"Categories: {len(CAT_LIST)}")

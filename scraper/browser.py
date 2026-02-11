@@ -97,6 +97,40 @@ async def get_page(browser: Browser) -> Page:
     return page
 
 
+async def warmup_cloudflare(page: Page):
+    """Navigate to Upwork once so Cloudflare tokens get cached in the profile."""
+    print("Warming up browser (Cloudflare pass)...")
+    try:
+        await page.goto("https://www.upwork.com/nx/search/jobs/?q=test&per_page=10", wait_until="domcontentloaded")
+    except Exception:
+        pass
+
+    # Wait for Cloudflare to resolve — user may need to click if Turnstile appears
+    for attempt in range(6):
+        try:
+            await page.wait_for_selector('article[data-test="JobTile"]', timeout=8000)
+            print("✓ Cloudflare passed — browser is ready.\n")
+            return True
+        except Exception:
+            title = await page.title()
+            if attempt == 0:
+                print("  Cloudflare challenge detected. If a checkbox appears in the browser, click it.")
+            print(f"  Waiting... ({attempt+1}/6) — page title: '{title[:40]}'")
+            await asyncio.sleep(5)
+
+    # Final check
+    title = await page.title()
+    if "search" in title.lower() or "upwork" in title.lower():
+        print("✓ Browser appears ready.\n")
+        return True
+
+    print("⚠ Could not pass Cloudflare automatically.")
+    print("  The browser window is open — please solve the challenge manually,")
+    print("  then press Enter here to continue...")
+    await asyncio.get_event_loop().run_in_executor(None, input)
+    return True
+
+
 async def human_delay(min_sec=None, max_sec=None):
     """Random delay to mimic human behavior."""
     mn = min_sec or config.MIN_DELAY_SECONDS
