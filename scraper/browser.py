@@ -1,5 +1,6 @@
 """Playwright browser setup — connects to your real Chrome for Cloudflare bypass."""
 
+import logging
 import random
 import asyncio
 import subprocess
@@ -9,6 +10,8 @@ from pathlib import Path
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 
 import config
+
+log = logging.getLogger(__name__)
 
 
 # Directory for Chrome user data when launching fresh
@@ -25,6 +28,7 @@ async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
     # First, try connecting to an already-running Chrome (port 9222)
     try:
         browser = await playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        log.info("Connected to existing Chrome on port 9222")
         print("Connected to existing Chrome instance on port 9222.")
         return browser, False
     except Exception:
@@ -71,12 +75,14 @@ async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
         await asyncio.sleep(1)
         try:
             browser = await playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            log.info("Chrome launched and connected")
             print("Chrome launched and connected.")
             return browser, True
         except Exception:
             if i > 3:
                 print(f"  Waiting for Chrome to start... ({i+1}s)")
 
+    log.error("Could not connect to Chrome after 15 attempts")
     raise RuntimeError("Could not connect to Chrome. Please launch it manually with --remote-debugging-port=9222")
 
 

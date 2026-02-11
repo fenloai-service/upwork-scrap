@@ -14,6 +14,7 @@ Usage:
 import sys
 import asyncio
 import argparse
+import logging
 
 from playwright.async_api import async_playwright
 
@@ -24,10 +25,29 @@ from scraper.search import scrape_keyword, scrape_single_url
 from dashboard.html_report import generate_report
 from dashboard.app import generate_dashboard
 
+log = logging.getLogger(__name__)
+
+
+def setup_logging():
+    """Configure logging to both console and file."""
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = config.DATA_DIR / "scrape.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+
 
 async def cmd_scrape_url(url: str):
     """Scrape a single URL."""
     init_db()
+    log.info("Scrape started: single URL")
     async with async_playwright() as pw:
         browser, _ = await launch_chrome_and_connect(pw)
         page = await get_page(browser)
@@ -36,8 +56,10 @@ async def cmd_scrape_url(url: str):
             jobs = await scrape_single_url(page, url)
             if jobs:
                 inserted, updated = upsert_jobs(jobs)
+                log.info(f"Scrape done: {inserted} new, {updated} updated, {get_job_count()} total")
                 print(f"\n✓ Done: {inserted} new, {updated} updated, {get_job_count()} total in DB")
             else:
+                log.warning("Scrape done: no jobs extracted from URL")
                 print("\n✗ No jobs extracted.")
         finally:
             await browser.close()
@@ -46,6 +68,7 @@ async def cmd_scrape_url(url: str):
 async def cmd_scrape_full():
     """Full scrape: all keywords, all pages."""
     init_db()
+    log.info(f"Full scrape started: {len(config.KEYWORDS)} keywords")
     total_new = 0
     total_updated = 0
 
@@ -62,8 +85,10 @@ async def cmd_scrape_full():
                     inserted, updated = upsert_jobs(jobs)
                     total_new += inserted
                     total_updated += updated
+                    log.info(f"Keyword '{keyword}': +{inserted} new, {updated} updated")
                     print(f"  → DB: +{inserted} new, {updated} updated")
                 else:
+                    log.info(f"Keyword '{keyword}': no jobs found")
                     print(f"  → No jobs found for '{keyword}'")
 
                 if i < len(config.KEYWORDS) - 1:
@@ -72,6 +97,7 @@ async def cmd_scrape_full():
         finally:
             await browser.close()
 
+    log.info(f"Full scrape complete: {total_new} new, {total_updated} updated, {get_job_count()} total")
     print(f"\n{'='*50}")
     print(f"Full scrape complete: {total_new} new, {total_updated} updated")
     print(f"Total jobs in database: {get_job_count()}")
@@ -80,6 +106,7 @@ async def cmd_scrape_full():
 async def cmd_scrape_new():
     """Daily scrape: only first 2 pages per keyword (newest jobs)."""
     init_db()
+    log.info("Daily scrape started")
     total_new = 0
 
     async with async_playwright() as pw:
@@ -101,6 +128,7 @@ async def cmd_scrape_new():
         finally:
             await browser.close()
 
+    log.info(f"Daily scrape complete: {total_new} new jobs, {get_job_count()} total")
     print(f"\n✓ Daily scrape: {total_new} new jobs found. Total in DB: {get_job_count()}")
 
 
@@ -181,6 +209,7 @@ def cmd_stats():
 
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="Upwork AI Jobs Scraper & Analyzer")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

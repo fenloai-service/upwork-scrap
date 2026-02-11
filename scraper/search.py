@@ -2,6 +2,7 @@
 
 import re
 import json
+import logging
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,8 @@ from playwright.async_api import Page
 
 import config
 from scraper.browser import human_delay, human_scroll
+
+log = logging.getLogger(__name__)
 
 
 def build_search_url(keyword: str, page_num: int) -> str:
@@ -163,6 +166,7 @@ async def scrape_search_page(page: Page, keyword: str, page_num: int) -> dict:
     try:
         await page.goto(url, wait_until="domcontentloaded")
     except Exception as e:
+        log.error(f"Failed to load {keyword} page {page_num}: {e}")
         print(f"  ✗ Failed to load page: {e}")
         return {"jobs": [], "totalOnPage": 0, "maxPage": 0, "error": str(e)}
 

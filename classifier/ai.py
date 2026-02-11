@@ -10,10 +10,13 @@ Usage:
 import sys
 import sqlite3
 import json
+import logging
 import time
 import os
 
 import config
+
+log = logging.getLogger(__name__)
 
 from openai import OpenAI
 
@@ -173,18 +176,22 @@ def classify_all():
             print(f"  Batch {batch_num}/{total_batches}: +{saved} classified (total: {classified})")
 
         except json.JSONDecodeError as e:
+            log.error(f"Batch {batch_num}: JSON parse error — {e}")
             print(f"  Batch {batch_num}: JSON parse error — {e}")
             errors += 1
         except Exception as e:
+            log.error(f"Batch {batch_num}: {e}")
             print(f"  Batch {batch_num}: Error — {e}")
             errors += 1
             if "rate" in str(e).lower():
+                log.warning("Rate limited, waiting 30s")
                 print("  Rate limited, waiting 30s...")
                 time.sleep(30)
 
         # Small delay to avoid rate limits
         time.sleep(0.5)
 
+    log.info(f"Classification complete: {classified} classified, {errors} errors")
     print(f"\nDone! Classified: {classified}, Errors: {errors}")
 
 
