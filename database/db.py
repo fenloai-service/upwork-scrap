@@ -19,7 +19,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create the jobs table if it doesn't exist."""
+    """Create the jobs and favorites tables if they don't exist."""
     conn = get_connection()
     try:
         conn.execute("""
@@ -57,6 +57,20 @@ def init_db():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_jobs_scraped ON jobs(scraped_at)
         """)
+
+        # Favorites table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                job_uid TEXT PRIMARY KEY,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT,
+                FOREIGN KEY(job_uid) REFERENCES jobs(uid)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_favorites_added ON favorites(added_at)
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -194,3 +208,102 @@ def _to_float(val) -> float | None:
         return float(str(val).replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Favorites Management
+# ══════════════════════════════════════════════════════════════════════════════
+
+def add_favorite(job_uid: str, notes: str = "") -> bool:
+    """Add a job to favorites. Returns True if added, False if already exists."""
+    conn = get_connection()
+    try:
+        # Check if already favorited
+        existing = conn.execute(
+            "SELECT job_uid FROM favorites WHERE job_uid = ?", (job_uid,)
+        ).fetchone()
+
+        if existing:
+            return False
+
+        conn.execute(
+            "INSERT INTO favorites (job_uid, notes) VALUES (?, ?)",
+            (job_uid, notes)
+        )
+        conn.commit()
+        log.info(f"Added job {job_uid} to favorites")
+        return True
+    except sqlite3.IntegrityError as e:
+        log.warning(f"Failed to add favorite {job_uid}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def remove_favorite(job_uid: str) -> bool:
+    """Remove a job from favorites. Returns True if removed, False if not found."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM favorites WHERE job_uid = ?", (job_uid,)
+        )
+        conn.commit()
+        removed = cursor.rowcount > 0
+        if removed:
+            log.info(f"Removed job {job_uid} from favorites")
+        return removed
+    finally:
+        conn.close()
+
+
+def get_favorites() -> list[dict]:
+    """Get all favorited jobs with their full details."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT
+                j.*,
+                f.added_at as favorited_at,
+                f.notes as favorite_notes
+            FROM favorites f
+            JOIN jobs j ON f.job_uid = j.uid
+            ORDER BY f.added_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def is_favorite(job_uid: str) -> bool:
+    """Check if a job is favorited."""
+    conn = get_connection()
+    try:
+        result = conn.execute(
+            "SELECT 1 FROM favorites WHERE job_uid = ?", (job_uid,)
+        ).fetchone()
+        return result is not None
+    finally:
+        conn.close()
+
+
+def get_favorite_count() -> int:
+    """Get total number of favorited jobs."""
+    conn = get_connection()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def update_favorite_notes(job_uid: str, notes: str) -> bool:
+    """Update notes for a favorited job."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE favorites SET notes = ? WHERE job_uid = ?",
+            (notes, job_uid)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()

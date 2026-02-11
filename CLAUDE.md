@@ -141,8 +141,10 @@ Run with `streamlit run dashboard/app.py`. Dashboard stays open and updates auto
 
 ## Legacy / Utility Scripts
 
-One-off utilities from early development live in `scripts/`. They are **not part of the main pipeline**:
+One-off utilities from early development live in `scripts/` and `dashboard/`. They are **not part of the main pipeline**:
 
+- `dashboard/html_dashboard.py` — legacy static HTML dashboard generator (replaced by Streamlit app)
+- `dashboard/html_report.py` — legacy static HTML report generator
 - `scripts/classify_with_opus.py` — one-time classification using Claude Opus
 - `scripts/remote_classify.py` / `remote_classify_v2.py` — remote/Ollama classification experiments
 - `scripts/import_classifications.py` / `import_results.py` — one-time data import scripts

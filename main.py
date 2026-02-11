@@ -23,7 +23,7 @@ from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count
 from scraper.browser import launch_chrome_and_connect, get_page, human_delay, warmup_cloudflare
 from scraper.search import scrape_keyword, scrape_single_url
 from dashboard.html_report import generate_report
-from dashboard.app import generate_dashboard
+from dashboard.html_dashboard import generate_dashboard
 
 log = logging.getLogger(__name__)
 
