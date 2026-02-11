@@ -314,7 +314,7 @@ def render_sidebar(df):
         filters['budget_max'] = None
 
     # Reset button
-    if st.sidebar.button("🔄 Reset All Filters", use_container_width=True):
+    if st.sidebar.button("🔄 Reset All Filters", width="stretch"):
         st.session_state.clear()
         st.rerun()
 
@@ -324,10 +324,10 @@ def render_sidebar(df):
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        if st.button("Top Matches", use_container_width=True):
+        if st.button("Top Matches", width="stretch"):
             filters['min_score'] = 70
     with col2:
-        if st.button("$500-2K", use_container_width=True):
+        if st.button("$500-2K", width="stretch"):
             filters['budget_min'] = 500
             filters['budget_max'] = 2000
 
@@ -352,7 +352,7 @@ def render_jobs_tab(df, filters):
             label_visibility='collapsed'
         )
     with col3:
-        if st.button("📥 Export CSV", use_container_width=True):
+        if st.button("📥 Export CSV", width="stretch"):
             export_df = df[['uid', 'title', 'url', 'job_type', 'fixed_price',
                            'hourly_rate_min', 'hourly_rate_max', 'experience_level',
                            'posted_text', 'score', 'ai_summary']]
@@ -362,7 +362,7 @@ def render_jobs_tab(df, filters):
                 csv,
                 f"upwork_jobs_{datetime.now():%Y%m%d_%H%M%S}.csv",
                 "text/csv",
-                use_container_width=True
+                width="stretch"
             )
 
     # Apply filters and sort
@@ -582,7 +582,7 @@ def render_analytics_tab(df):
                 color_discrete_sequence=['#14a800', '#1976d2', '#f57c00']
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     with col2:
         # Experience Level Distribution
@@ -597,7 +597,7 @@ def render_analytics_tab(df):
                 color_continuous_scale='Greens'
             )
             fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Count")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     # Top Skills
     st.subheader("🛠️ Top Skills (Top 20)")
@@ -618,7 +618,7 @@ def render_analytics_tab(df):
             yaxis_title="",
             yaxis={'categoryorder': 'total ascending'}
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     # Budget stats
     col1, col2 = st.columns(2)
@@ -669,7 +669,7 @@ def render_analytics_tab(df):
             yaxis_title="",
             yaxis={'categoryorder': 'total ascending'}
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     # Daily volume
     st.subheader("📈 Jobs Posted Over Time")
@@ -686,7 +686,7 @@ def render_analytics_tab(df):
             yaxis_title="Jobs Posted",
             showlegend=False
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.info("No date data available for timeline")
 
@@ -738,7 +738,7 @@ def render_favorites_tab():
             label_visibility='collapsed'
         )
     with col3:
-        if st.button("📥 Export Favorites", use_container_width=True):
+        if st.button("📥 Export Favorites", width="stretch"):
             export_df = fav_df[['uid', 'title', 'url', 'job_type', 'fixed_price',
                                'hourly_rate_min', 'hourly_rate_max', 'experience_level',
                                'posted_text', 'score', 'ai_summary', 'favorited_at']]
@@ -748,7 +748,7 @@ def render_favorites_tab():
                 csv,
                 f"upwork_favorites_{datetime.now():%Y%m%d_%H%M%S}.csv",
                 "text/csv",
-                use_container_width=True
+                width="stretch"
             )
 
     # Sort favorites
@@ -764,7 +764,7 @@ def render_favorites_tab():
     # Clear all favorites button
     col1, col2, col3 = st.columns([2, 1, 1])
     with col3:
-        if st.button("🗑️ Clear All Favorites", use_container_width=True):
+        if st.button("🗑️ Clear All Favorites", width="stretch"):
             if st.session_state.get('confirm_clear_favorites'):
                 for uid in fav_df['uid']:
                     remove_favorite(uid)
