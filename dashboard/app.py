@@ -101,6 +101,36 @@ PROFILE_SKILLS = {
 # Helper Functions
 # ══════════════════════════════════════════════════════════════════════════════
 
+def check_password():
+    """Simple password gate using Streamlit secrets. Returns True if authenticated."""
+    try:
+        if not (hasattr(st, 'secrets') and 'auth' in st.secrets):
+            return True
+    except Exception:
+        return True
+
+    if st.session_state.get('authenticated'):
+        return True
+
+    st.title("Upwork AI Jobs Dashboard")
+    st.markdown("Please log in to access the dashboard.")
+
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+
+    if submitted:
+        if (username == st.secrets['auth']['username'] and
+                password == st.secrets['auth']['password']):
+            st.session_state['authenticated'] = True
+            st.rerun()
+        else:
+            st.error("Invalid username or password")
+
+    return False
+
+
 def is_read_only_mode():
     """Check if dashboard is in read-only mode (cloud deployment)."""
     # Check environment variable first
@@ -1933,4 +1963,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if check_password():
+        main()
