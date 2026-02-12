@@ -316,6 +316,84 @@ def filter_jobs(df, filters):
     return filtered
 
 
+def filter_proposals(df, filters):
+    """Apply sidebar filters to the proposals dataframe.
+
+    Column names differ from the jobs df (prefixed with job_), so we map them.
+    """
+    filtered = df.copy()
+
+    # Search text — match against job_title, job_description, job_ai_summary, proposal_text
+    if filters.get('search'):
+        search_lower = filters['search'].lower()
+        mask = filtered['job_title'].str.lower().str.contains(search_lower, na=False)
+        for col in ['job_description', 'job_ai_summary', 'proposal_text']:
+            if col in filtered.columns:
+                mask = mask | filtered[col].str.lower().str.contains(search_lower, na=False)
+        filtered = filtered[mask]
+
+    # Min match score
+    if filters.get('min_score', 0) > 0:
+        filtered = filtered[filtered['match_score'] >= filters['min_score']]
+
+    # Category
+    if filters.get('category') and 'job_categories' in filtered.columns:
+        def _cat_match(val):
+            if not val:
+                return False
+            try:
+                cats = json.loads(val) if isinstance(val, str) else val
+                return filters['category'] in cats
+            except (json.JSONDecodeError, TypeError):
+                return False
+        filtered = filtered[filtered['job_categories'].apply(_cat_match)]
+
+    # Key tool
+    if filters.get('key_tool') and 'job_key_tools' in filtered.columns:
+        def _tool_match(val):
+            if not val:
+                return False
+            try:
+                tools = json.loads(val) if isinstance(val, str) else val
+                return filters['key_tool'] in tools
+            except (json.JSONDecodeError, TypeError):
+                return False
+        filtered = filtered[filtered['job_key_tools'].apply(_tool_match)]
+
+    # Job type
+    if filters.get('job_type') and 'job_type' in filtered.columns:
+        filtered = filtered[filtered['job_type'] == filters['job_type']]
+
+    # Experience level
+    if filters.get('experience') and 'job_experience_level' in filtered.columns:
+        filtered = filtered[filtered['job_experience_level'] == filters['experience']]
+
+    # Budget range
+    if filters.get('budget_min') or filters.get('budget_max'):
+        budget_min = filters.get('budget_min', 0)
+        budget_max = filters.get('budget_max', float('inf'))
+
+        def _budget_in_range(row):
+            if row.get('job_type') == 'Fixed' and row.get('fixed_price'):
+                try:
+                    return budget_min <= float(row['fixed_price']) <= budget_max
+                except (ValueError, TypeError):
+                    return False
+            elif row.get('hourly_rate_min'):
+                try:
+                    return budget_min <= float(row['hourly_rate_min']) <= budget_max
+                except (ValueError, TypeError):
+                    return False
+            return False
+
+        filtered = filtered[filtered.apply(_budget_in_range, axis=1)]
+
+    # Keyword — proposals don't have keyword column directly, skip
+    # (keyword filter is scraping-specific, not relevant to proposals)
+
+    return filtered
+
+
 def sort_jobs(df, sort_by):
     """Sort jobs based on selected criteria."""
     if sort_by == 'Best Match':
@@ -847,7 +925,7 @@ def render_analytics_tab(df):
         st.info("No date data available for timeline")
 
 
-def render_proposals_tab():
+def render_proposals_tab(filters=None):
     """Render the Proposals tab with proposal cards and management UI."""
     st.markdown("### ✍️ Proposals")
 
@@ -925,6 +1003,13 @@ def render_proposals_tab():
 
     # Convert to dataframe for easier filtering
     prop_df = pd.DataFrame(proposals)
+
+    # Apply sidebar filters (search, category, tool, job type, experience, budget, score)
+    if filters:
+        prop_df = filter_proposals(prop_df, filters)
+        if prop_df.empty:
+            st.info("No proposals match the current sidebar filters. Try adjusting your filters.")
+            return
 
     # Filter to approved only in read-only mode if configured
     if read_only and show_approved_only:
@@ -2007,7 +2092,7 @@ def main():
         render_jobs_tab(df, filters)
 
     with tab2:
-        render_proposals_tab()
+        render_proposals_tab(filters)
 
     with tab3:
         render_favorites_tab()
