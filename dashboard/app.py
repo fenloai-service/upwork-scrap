@@ -1896,6 +1896,10 @@ def render_profile_proposals_tab():
 def main():
     """Main app entry point."""
 
+    if not check_password():
+        st.stop()
+        return
+
     # Header
     st.title("🎯 Upwork AI Jobs Dashboard")
     st.markdown("*Live dashboard for AI freelance opportunities*")
@@ -1963,5 +1967,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if check_password():
-        main()
+    main()
