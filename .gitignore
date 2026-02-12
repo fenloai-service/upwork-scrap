@@ -16,5 +16,6 @@ data/emails/
 # Local tooling / IDE
 .playwright-mcp/
 .serena/
+.claude/settings.local.json
 dashboard_error.png
 *.bak
