@@ -103,11 +103,18 @@ PROFILE_SKILLS = {
 
 def check_password():
     """Simple password gate using Streamlit secrets. Returns True if authenticated."""
+    # Determine where credentials live: [auth] section or top-level
     try:
-        if not (hasattr(st, 'secrets') and 'auth' in st.secrets):
-            return True
-    except Exception:
-        return True
+        if 'auth' in st.secrets:
+            expected_user = st.secrets['auth']['username']
+            expected_pass = st.secrets['auth']['password']
+        elif 'username' in st.secrets and 'password' in st.secrets:
+            expected_user = st.secrets['username']
+            expected_pass = st.secrets['password']
+        else:
+            return True  # No credentials configured — skip auth
+    except (KeyError, FileNotFoundError):
+        return True  # No secrets file — skip auth
 
     if st.session_state.get('authenticated'):
         return True
@@ -121,8 +128,7 @@ def check_password():
         submitted = st.form_submit_button("Log in")
 
     if submitted:
-        if (username == st.secrets['auth']['username'] and
-                password == st.secrets['auth']['password']):
+        if username == expected_user and password == expected_pass:
             st.session_state['authenticated'] = True
             st.rerun()
         else:
