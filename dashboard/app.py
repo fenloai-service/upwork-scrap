@@ -32,6 +32,12 @@ import config
 
 log = logging.getLogger(__name__)
 
+# Force-reload database.db to pick up new functions after deployment
+# (Streamlit Cloud may cache stale module versions in sys.modules)
+import importlib
+import database.db as _db_mod
+importlib.reload(_db_mod)
+
 from database.db import (
     init_db,
     get_all_jobs,
