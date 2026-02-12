@@ -66,7 +66,7 @@ from dashboard.analytics import (
     keyword_distribution,
     generate_summary,
 )
-from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files, get_last_save_target, get_last_save_error
+from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files
 from ai_client import get_client, test_connection, list_available_models, load_ai_config
 from matcher import score_job as matcher_score_job, load_preferences
 
@@ -1645,11 +1645,7 @@ def render_scraping_ai_tab():
             }
         }
         if save_yaml_config("scraping.yaml", new_scraping):
-            target = get_last_save_target()
-            err = get_last_save_error()
-            st.success(f"Scraping settings saved ({len(new_keywords)} keywords) → {target}")
-            if err:
-                st.warning(f"DB save issue (fell back to {target}): {err}")
+            st.success(f"Scraping settings saved ({len(new_keywords)} keywords)")
             st.cache_data.clear()
         else:
             st.error("Failed to save scraping settings")
@@ -1755,11 +1751,7 @@ def render_scraping_ai_tab():
             }
         }
         if save_yaml_config("ai_models.yaml", new_ai):
-            target = get_last_save_target()
-            err = get_last_save_error()
-            st.success(f"AI settings saved → {target} (classification: {class_provider}/{class_model}, proposals: {prop_provider}/{prop_model})")
-            if err:
-                st.warning(f"DB save issue (fell back to {target}): {err}")
+            st.success(f"AI settings saved (classification: {class_provider}/{class_model}, proposals: {prop_provider}/{prop_model})")
             st.cache_data.clear()
         else:
             st.error("Failed to save AI settings")

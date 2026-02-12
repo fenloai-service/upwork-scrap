@@ -61,51 +61,22 @@ def save_yaml_config(filename: str, data: dict) -> bool:
     Returns:
         True if saved successfully, False otherwise.
     """
-    global _last_save_target, _last_save_error
-    _last_save_error = ""
-
     # Save to database (primary storage)
     try:
         import database.db as _db_mod
         key = _config_key(filename)
-        result = _db_mod.save_setting(key, data)
-        if result:
+        if _db_mod.save_setting(key, data):
             log.info(f"Config saved to DB: {filename}")
-            _last_save_target = "db"
             # Also write YAML as local backup (best-effort)
             _write_yaml_backup(filename, data)
             return True
         else:
-            _last_save_error = f"save_setting('{key}') returned False"
-            log.warning(_last_save_error)
+            log.warning(f"save_setting returned False for {filename}")
     except Exception as e:
-        # Diagnose what's available in the module
-        try:
-            import database.db as _dbg
-            avail = [n for n in dir(_dbg) if 'sett' in n.lower() or 'save' in n.lower()]
-        except Exception:
-            avail = ["module import failed"]
-        _last_save_error = f"DB save exception: {e} | available: {avail}"
         log.warning(f"DB save failed for {filename}, falling back to YAML: {e}")
 
     # Fall back to YAML-only save
-    _last_save_target = "yaml"
     return _write_yaml_backup(filename, data)
-
-
-# Track where the last save went (for diagnostic display)
-_last_save_target = ""
-_last_save_error = ""
-
-
-def get_last_save_target() -> str:
-    """Return where the last save_yaml_config() call stored data ('db' or 'yaml')."""
-    return _last_save_target
-
-
-def get_last_save_error() -> str:
-    """Return error detail from the last save attempt (empty if save went to DB)."""
-    return _last_save_error
 
 
 def _write_yaml_backup(filename: str, data: dict) -> bool:
