@@ -60,7 +60,7 @@ from dashboard.analytics import (
     keyword_distribution,
     generate_summary,
 )
-from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files
+from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files, get_last_save_target
 from ai_client import get_client, test_connection, list_available_models, load_ai_config
 from matcher import score_job as matcher_score_job, load_preferences
 
@@ -1636,7 +1636,8 @@ def render_scraping_ai_tab():
             }
         }
         if save_yaml_config("scraping.yaml", new_scraping):
-            st.success(f"Scraping settings saved ({len(new_keywords)} keywords)")
+            target = get_last_save_target()
+            st.success(f"Scraping settings saved ({len(new_keywords)} keywords) → {target}")
             st.cache_data.clear()
         else:
             st.error("Failed to save scraping settings")
