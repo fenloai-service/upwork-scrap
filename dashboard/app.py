@@ -64,6 +64,9 @@ from dashboard.config_editor import load_yaml_config, save_yaml_config, get_conf
 from ai_client import get_client, test_connection, list_available_models, load_ai_config
 from matcher import score_job as matcher_score_job, load_preferences
 
+# ── Ensure DB schema is initialized (settings table, etc.) ──────────────────
+init_db()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Page Configuration
 # ══════════════════════════════════════════════════════════════════════════════
