@@ -165,6 +165,15 @@ def should_show_approved_only():
 
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
+def load_proposals_data():
+    """Load proposals data with caching."""
+    try:
+        return get_proposals()
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_jobs_data():
     """Load and prepare jobs data with caching."""
     init_db()
@@ -978,13 +987,8 @@ def render_proposals_tab(filters=None):
         st.warning(f"Could not load proposal analytics: {e}")
         log.warning(f"Failed to load proposal analytics: {e}")
 
-    # Load proposals
-    try:
-        proposals = get_proposals()
-    except Exception as e:
-        st.error(f"Failed to load proposals: {e}")
-        log.error(f"Failed to load proposals: {e}")
-        proposals = []
+    # Load proposals (cached)
+    proposals = load_proposals_data()
 
     if not proposals:
         # Diagnostic: check raw proposal count (without JOIN)
@@ -2039,19 +2043,18 @@ def main():
     fav_count = get_favorite_count()
     fav_label = f"⭐ Favorites ({fav_count})" if fav_count > 0 else "⭐ Favorites"
 
-    # Count pending proposals
+    # Count pending proposals (lightweight query, no full data load)
     try:
-        proposals = get_proposals()
-        pending_proposals = len([p for p in proposals if p['status'] == 'pending_review'])
+        proposal_stats = get_proposal_stats()
+        pending_proposals = proposal_stats.get('pending_review', 0)
     except Exception as e:
-        log.error(f"Failed to load proposals for tab count: {e}")
-        proposals = []
+        log.error(f"Failed to load proposal stats for tab count: {e}")
         pending_proposals = 0
     proposals_label = f"✍️ Proposals ({pending_proposals})" if pending_proposals > 0 else "✍️ Proposals"
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📋 Jobs",
         proposals_label,
+        "📋 Jobs",
         fav_label,
         "📊 Analytics",
         "Scraping & AI",
@@ -2059,10 +2062,10 @@ def main():
     ])
 
     with tab1:
-        render_jobs_tab(df, filters)
+        render_proposals_tab(filters)
 
     with tab2:
-        render_proposals_tab(filters)
+        render_jobs_tab(df, filters)
 
     with tab3:
         render_favorites_tab()
