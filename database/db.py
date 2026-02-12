@@ -386,7 +386,7 @@ def get_job_by_uid(uid: str) -> dict | None:
 def get_job_count() -> int:
     conn = get_connection()
     try:
-        return conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) as cnt FROM jobs").fetchone()["cnt"]
     finally:
         conn.close()
 
@@ -528,10 +528,10 @@ def get_classification_status() -> tuple[int, int]:
     """
     conn = get_connection()
     try:
-        total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) as cnt FROM jobs").fetchone()["cnt"]
         classified = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE ai_summary != '' AND ai_summary IS NOT NULL"
-        ).fetchone()[0]
+            "SELECT COUNT(*) as cnt FROM jobs WHERE ai_summary != '' AND ai_summary IS NOT NULL"
+        ).fetchone()["cnt"]
         return total, classified
     finally:
         conn.close()
@@ -667,7 +667,7 @@ def get_favorite_count() -> int:
     """Get total number of favorited jobs."""
     conn = get_connection()
     try:
-        return conn.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) as cnt FROM favorites").fetchone()["cnt"]
     finally:
         conn.close()
 
@@ -832,7 +832,7 @@ def get_proposal_stats() -> dict:
 
         stats = {row["status"]: row["count"] for row in rows}
 
-        total = conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) as cnt FROM proposals").fetchone()["cnt"]
         stats["total"] = total
 
         return stats
