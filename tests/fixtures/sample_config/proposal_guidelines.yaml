@@ -1,0 +1,15 @@
+guidelines:
+  tone: "professional"
+  max_length: 300
+  required_sections:
+    - "greeting"
+    - "relevant_experience"
+    - "approach"
+    - "call_to_action"
+  avoid_phrases:
+    - "I am very interested"
+    - "Please consider me"
+  emphasis:
+    - "Reference specific job requirements"
+    - "Be concise and specific"
+  max_daily_proposals: 20

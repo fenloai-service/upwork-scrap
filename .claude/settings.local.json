@@ -62,7 +62,24 @@
       "Bash(streamlit:*)",
       "Bash(cat:*)",
       "Bash(open:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(test:*)",
+      "Bash(echo:*)",
+      "Bash(pytest:*)",
+      "Bash(pip show playwright)",
+      "Bash(test_browser.py << 'EOF'\n#!/usr/bin/env python3\n\"\"\"Test browser connection and Cloudflare warmup.\"\"\"\nimport asyncio\nfrom scraper.browser import launch_browser, warmup_cloudflare\n\nasync def test\\(\\):\n    print\\(\"Testing browser launch...\"\\)\n    page = await launch_browser\\(\\)\n    print\\(\"✓ Browser launched\"\\)\n    \n    print\\(\"\\\\nTesting Cloudflare warmup...\"\\)\n    await warmup_cloudflare\\(page\\)\n    print\\(\"✓ Warmup complete\"\\)\n    \n    print\\(\"\\\\nBrowser test passed! Press Ctrl+C to close.\"\\)\n    await asyncio.sleep\\(300\\)  # Keep open for 5 minutes\n\nif __name__ == \"__main__\":\n    asyncio.run\\(test\\(\\)\\)\nEOF)",
+      "Bash(setup_resend.md << 'EOF'\n# Resend Email Setup \\(5 Minutes\\)\n\n## Step 1: Get Free Resend Account\n1. Go to: https://resend.com/signup\n2. Sign up \\(free - 3,000 emails/month\\)\n3. Verify your email\n\n## Step 2: Get API Key\n1. Go to: https://resend.com/api-keys\n2. Click \"Create API Key\"\n3. Copy the key \\(starts with `re_...`\\)\n\n## Step 3: Update .env\nAdd these lines to your .env file:\n\n```bash\n# Resend Email \\(instead of Gmail\\)\nRESEND_API_KEY=re_your_api_key_here\nRESEND_FROM_EMAIL=onboarding@resend.dev\nRESEND_TO_EMAIL=your-email@gmail.com\n```\n\n## Step 4: Install Package\n```bash\nsource .venv/bin/activate\npip install resend\n```\n\n## Step 5: Update main.py \\(Simple\\)\nIn main.py, change the email import from:\n```python\nfrom notifier import send_notification\n```\n\nTo:\n```python\nfrom notifier_resend import send_notification_resend as send_notification\n```\n\nDone! Much simpler than Gmail SMTP.\nEOF)",
+      "Bash(__NEW_LINE_2db062dcbca1d488__ cat setup_resend.md)",
+      "Bash(test_email.py << 'EOF'\n#!/usr/bin/env python3\n\"\"\"Test Gmail email sending.\"\"\"\nimport sys\nsys.path.insert\\(0, '/Users/mohammadshoaib/Codes/upwork-scrap'\\)\n\nfrom dotenv import load_dotenv\nload_dotenv\\(\\)\n\nimport os\n\n# Check if password is set\ngmail_password = os.getenv\\('GMAIL_APP_PASSWORD'\\)\nprint\\(f\"📧 Testing Gmail Email Setup\\\\n{'='*60}\"\\)\nprint\\(f\"✅ GMAIL_APP_PASSWORD: {'Set' if gmail_password else 'Not set'}\"\\)\n\nif gmail_password:\n    print\\(f\"   Password: {gmail_password[:4]}...{gmail_password[-4:]}\"\\)\n    print\\(f\"\\\\n✅ Gmail is configured!\"\\)\n    print\\(f\"\\\\nNext: Update config/email_config.yaml with your email address\"\\)\nelse:\n    print\\(\"\\\\n❌ GMAIL_APP_PASSWORD not set in .env\"\\)\nEOF)",
+      "Bash(__NEW_LINE_3ca435b00e25f937__ python test_email.py)",
+      "Bash(grep:*)",
+      "Bash(kill:*)",
+      "Bash(ssh:*)",
+      "Bash(curl:*)",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_snapshot",
+      "Bash(DATABASE_URL='postgresql://neondb_owner:REDACTED_PASSWORD@ep-old-fire-ai4d2mxl-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require' python:*)",
+      "Bash(DATABASE_URL='postgresql://neondb_owner:REDACTED_PASSWORD@ep-old-fire-ai4d2mxl-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require' PYTHONUNBUFFERED=1 python:*)"
     ]
   }
 }

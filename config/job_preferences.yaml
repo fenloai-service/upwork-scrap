@@ -1,0 +1,41 @@
+preferences:
+  categories:
+  - RAG / Document AI
+  - AI Agent / Multi-Agent System
+  - Build AI Web App / SaaS
+  - AI Chatbot / Virtual Assistant
+  - Custom ML Model / Training
+  required_skills:
+  - Python
+  - LangChain
+  - OpenAI
+  - RAG
+  - AI
+  nice_to_have_skills:
+  - Pinecone
+  - ChromaDB
+  - Weaviate
+  - OpenAI API
+  - FastAPI
+  - Streamlit
+  - React
+  - Next.js
+  budget:
+    fixed_min: 500
+    fixed_max: 10000
+    hourly_min: 25
+  client_criteria:
+    payment_verified: false
+    min_total_spent: 0
+    min_rating: 0
+  exclusion_keywords:
+  - wordpress
+  - shopify
+  - wix
+  - squarespace
+  - data entry
+  - cold calling
+  - lead generation
+  - SEO only
+  - social media management
+  threshold: 50

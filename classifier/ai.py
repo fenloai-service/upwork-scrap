@@ -1,26 +1,31 @@
 """
-Classify jobs using Grok (xAI) API.
+Classify jobs using AI (Ollama local or Groq cloud).
 
 Usage:
-    export XAI_API_KEY="xai-..."
     python -m classifier.ai          # Classify all unprocessed jobs
     python -m classifier.ai --status  # Show progress
 """
 
 import sys
-import sqlite3
 import json
+import re
 import logging
 import time
 import os
 
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
 import config
+from ai_client import get_client
+from api_usage_tracker import check_daily_limit as check_api_limit, record_usage
+from database.db import (
+    get_unclassified_jobs as db_get_unclassified_jobs,
+    update_job_classifications,
+    get_classification_status,
+)
 
 log = logging.getLogger(__name__)
 
-from openai import OpenAI
-
-MODEL = "grok-beta"
 BATCH_SIZE = 20  # Jobs per API call
 RESULTS_FILE = config.DATA_DIR / "classified_results.jsonl"
 
@@ -69,12 +74,7 @@ Return ONLY a JSON array. No markdown fences."""
 
 def get_unclassified_jobs():
     """Get jobs that haven't been AI-classified yet."""
-    conn = sqlite3.connect(config.DB_PATH)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT uid, title, description, skills FROM jobs WHERE ai_summary = '' OR ai_summary IS NULL"
-    ).fetchall()
-    conn.close()
+    rows = db_get_unclassified_jobs()
 
     jobs = []
     for r in rows:
@@ -95,59 +95,139 @@ def get_unclassified_jobs():
 
 def save_results(results):
     """Save classification results to DB."""
-    conn = sqlite3.connect(config.DB_PATH)
-    count = 0
-    for r in results:
-        uid = r.get("uid")
-        if not uid:
-            continue
-        categories = json.dumps(r.get("categories", []))
-        key_tools = json.dumps(r.get("key_tools", []))
-        ai_summary = r.get("ai_summary", "")
-        conn.execute(
-            "UPDATE jobs SET categories=?, key_tools=?, ai_summary=? WHERE uid=?",
-            (categories, key_tools, ai_summary, uid),
-        )
-        count += 1
-    conn.commit()
-    conn.close()
-    return count
+    return update_job_classifications(results)
 
 
-def classify_batch(client, batch):
-    """Send a batch to Haiku and parse the response."""
-    prompt = build_user_prompt(batch)
-
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=4096,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    )
-
-    text = response.choices[0].message.content.strip()
-    # Strip markdown fences if present
+def _repair_json(text):
+    """Attempt to repair common JSON issues from LLM output."""
+    # Strip markdown fences
     if text.startswith("```"):
         text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
 
-    results = json.loads(text)
-    return results
+    # Extract JSON array if surrounded by other text
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    if match:
+        text = match.group(0)
+
+    # Remove trailing commas before ] or }
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+
+    # Fix truncated output — close open braces/brackets
+    open_braces = text.count('{') - text.count('}')
+    open_brackets = text.count('[') - text.count(']')
+    if open_braces > 0 or open_brackets > 0:
+        # Truncate to last complete object
+        last_complete = text.rfind('}')
+        if last_complete > 0:
+            text = text[:last_complete + 1]
+            open_brackets = text.count('[') - text.count(']')
+            text += ']' * open_brackets
+
+    return text
+
+
+MAX_RETRIES = 2
+
+
+def classify_batch(client, batch, model_name="llama3:8b", provider_name="ollama_local"):
+    """Send a batch to the AI provider and parse the response.
+
+    Retries up to MAX_RETRIES times on JSON parse failures, attempting
+    to repair malformed output before retrying with the API.
+
+    Args:
+        client: OpenAI-compatible API client
+        batch: List of job dicts to classify
+        model_name: Model identifier to use
+        provider_name: Provider name for usage tracking
+
+    Returns:
+        List of classification results
+    """
+    prompt = build_user_prompt(batch)
+    last_error = None
+
+    for attempt in range(1 + MAX_RETRIES):
+        response = client.chat.completions.create(
+            model=model_name,
+            max_tokens=4096,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        # Track token usage if available
+        if hasattr(response, 'usage') and response.usage:
+            tokens = response.usage.total_tokens or 0
+            if tokens > 0:
+                record_usage(provider_name, model_name, tokens)
+
+        text = response.choices[0].message.content.strip()
+
+        try:
+            repaired = _repair_json(text)
+            results = json.loads(repaired)
+            return results
+        except json.JSONDecodeError as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                log.warning(f"JSON parse error (attempt {attempt + 1}), retrying: {e}")
+                time.sleep(1)
+
+    raise last_error
+
+
+def _process_batch(client, batch, model_name, batch_label, results_file, provider_name="ollama_local"):
+    """Process a single batch: classify, save, track missing UIDs.
+
+    Returns:
+        Tuple of (saved_count, missing_jobs) where missing_jobs is a list
+        of job dicts that were sent but not returned in results.
+    """
+    batch_uids = {j["uid"] for j in batch}
+
+    results = classify_batch(client, batch, model_name, provider_name=provider_name)
+    saved = save_results(results)
+
+    # Append to JSONL backup
+    with open(results_file, "a") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+
+    # Find jobs the model didn't return
+    returned_uids = {r.get("uid") for r in results}
+    missing_jobs = [j for j in batch if j["uid"] not in returned_uids]
+
+    if missing_jobs:
+        log.info(f"{batch_label}: {len(missing_jobs)} jobs missing from response")
+
+    return saved, missing_jobs
+
+
+RETRY_PASSES = 2
 
 
 def classify_all():
-    """Main classification loop."""
-    api_key = os.environ.get("XAI_API_KEY")
-    if not api_key:
-        print("Set XAI_API_KEY first:")
-        print('  export XAI_API_KEY="xai-..."')
+    """Main classification loop with automatic retry for missing/failed jobs."""
+    try:
+        client, model_name, provider_name = get_client("classification")
+    except RuntimeError as e:
+        print(f"❌ {e}")
         sys.exit(1)
 
-    client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+    # Check API rate limit before starting
+    rate_status = check_api_limit(provider=provider_name)
+    if rate_status['exceeded']:
+        print(f"❌ API rate limit exceeded for {provider_name} ({rate_status['used']:,}/{rate_status['limit']:,} tokens)")
+        print(f"   Please wait until tomorrow or switch providers in config/ai_models.yaml")
+        return
+    if rate_status['warning']:
+        print(f"⚠️  API usage warning: {rate_status['used']:,}/{rate_status['limit']:,} tokens ({rate_status['percentage']:.1f}%)")
+
     jobs = get_unclassified_jobs()
 
     if not jobs:
@@ -155,55 +235,80 @@ def classify_all():
         return
 
     print(f"Classifying {len(jobs)} jobs in batches of {BATCH_SIZE}...")
+    print(f"Using: {provider_name} - {model_name}")
     total_batches = (len(jobs) + BATCH_SIZE - 1) // BATCH_SIZE
     classified = 0
     errors = 0
+    failed_jobs = []
 
     for i in range(0, len(jobs), BATCH_SIZE):
         batch = jobs[i:i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
+        label = f"Batch {batch_num}/{total_batches}"
 
         try:
-            results = classify_batch(client, batch)
-            saved = save_results(results)
+            saved, missing = _process_batch(client, batch, model_name, label, RESULTS_FILE, provider_name=provider_name)
             classified += saved
-
-            # Also append to JSONL backup
-            with open(RESULTS_FILE, "a") as f:
-                for r in results:
-                    f.write(json.dumps(r) + "\n")
-
-            print(f"  Batch {batch_num}/{total_batches}: +{saved} classified (total: {classified})")
+            failed_jobs.extend(missing)
+            miss_msg = f", {len(missing)} missing" if missing else ""
+            print(f"  {label}: +{saved} classified{miss_msg} (total: {classified})")
 
         except json.JSONDecodeError as e:
-            log.error(f"Batch {batch_num}: JSON parse error — {e}")
-            print(f"  Batch {batch_num}: JSON parse error — {e}")
+            log.error(f"{label}: JSON parse error — {e}")
+            print(f"  {label}: JSON parse error — {e}")
             errors += 1
+            failed_jobs.extend(batch)
         except Exception as e:
-            log.error(f"Batch {batch_num}: {e}")
-            print(f"  Batch {batch_num}: Error — {e}")
+            log.error(f"{label}: {e}")
+            print(f"  {label}: Error — {e}")
             errors += 1
+            failed_jobs.extend(batch)
             if "rate" in str(e).lower():
-                log.warning("Rate limited, waiting 30s")
                 print("  Rate limited, waiting 30s...")
                 time.sleep(30)
 
-        # Small delay to avoid rate limits
         time.sleep(0.5)
 
-    log.info(f"Classification complete: {classified} classified, {errors} errors")
-    print(f"\nDone! Classified: {classified}, Errors: {errors}")
+    # Retry failed/missing jobs in smaller batches
+    retry_batch_size = max(BATCH_SIZE // 2, 5)
+    for retry_pass in range(1, RETRY_PASSES + 1):
+        if not failed_jobs:
+            break
+        print(f"\n  Retry pass {retry_pass}: {len(failed_jobs)} jobs in batches of {retry_batch_size}...")
+        next_failed = []
+
+        for i in range(0, len(failed_jobs), retry_batch_size):
+            batch = failed_jobs[i:i + retry_batch_size]
+            batch_num = i // retry_batch_size + 1
+            retry_batches = (len(failed_jobs) + retry_batch_size - 1) // retry_batch_size
+            label = f"Retry {retry_pass} batch {batch_num}/{retry_batches}"
+
+            try:
+                saved, missing = _process_batch(client, batch, model_name, label, RESULTS_FILE, provider_name=provider_name)
+                classified += saved
+                next_failed.extend(missing)
+                miss_msg = f", {len(missing)} missing" if missing else ""
+                print(f"  {label}: +{saved} classified{miss_msg} (total: {classified})")
+            except (json.JSONDecodeError, Exception) as e:
+                log.error(f"{label}: {e}")
+                print(f"  {label}: Error — {e}")
+                next_failed.extend(batch)
+
+            time.sleep(0.5)
+
+        failed_jobs = next_failed
+
+    remaining = len(failed_jobs)
+    log.info(f"Classification complete: {classified} classified, {errors} batch errors, {remaining} unresolved")
+    print(f"\nDone! Classified: {classified}, Errors: {errors}"
+          + (f", {remaining} unresolved" if remaining else ""))
 
 
 def show_status():
     """Show classification progress."""
-    conn = sqlite3.connect(config.DB_PATH)
-    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    classified = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE ai_summary != '' AND ai_summary IS NOT NULL"
-    ).fetchone()[0]
-    conn.close()
-    print(f"Total: {total} | Classified: {classified} | Remaining: {total - classified} | {classified/total*100:.1f}%")
+    total, classified = get_classification_status()
+    pct = classified / total * 100 if total > 0 else 0
+    print(f"Total: {total} | Classified: {classified} | Remaining: {total - classified} | {pct:.1f}%")
 
 
 if __name__ == "__main__":

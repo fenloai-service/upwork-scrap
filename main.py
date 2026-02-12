@@ -7,6 +7,8 @@ Usage:
     python main.py scrape --full                    # Scrape all keywords, all pages
     python main.py scrape --new                     # Scrape only recent (page 1-2) per keyword
     python main.py scrape --keyword "machine learning" --pages 5
+    python main.py monitor --new                    # Monitor pipeline: scrape → classify → match → generate
+    python main.py monitor --new --dry-run          # Monitor without API calls (testing)
     python main.py report                           # Generate HTML report
     python main.py stats                            # Print quick stats
 """
@@ -15,17 +17,27 @@ import sys
 import asyncio
 import argparse
 import logging
+import json
+import os
+import time
+from datetime import datetime
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
 import config
-from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count
+from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count, get_all_job_uids
 from scraper.browser import launch_chrome_and_connect, get_page, human_delay, warmup_cloudflare
 from scraper.search import scrape_keyword, scrape_single_url
 from dashboard.html_report import generate_report
 from dashboard.html_dashboard import generate_dashboard
 
 log = logging.getLogger(__name__)
+
+# Monitor-specific paths
+MONITOR_LOG_FILE = config.DATA_DIR / "monitor.log"
+MONITOR_LOCK_FILE = config.DATA_DIR / "monitor.lock"
+LAST_RUN_STATUS_FILE = config.DATA_DIR / "last_run_status.json"
 
 
 def setup_logging():
@@ -72,6 +84,11 @@ async def cmd_scrape_full():
     total_new = 0
     total_updated = 0
 
+    # Load known UIDs for duplicate skipping
+    known_uids = get_all_job_uids() if config.DUPLICATE_SKIP_ENABLED else None
+    if known_uids is not None:
+        log.info(f"Duplicate skip enabled: {len(known_uids)} known UIDs loaded")
+
     async with async_playwright() as pw:
         browser, _ = await launch_chrome_and_connect(pw)
         page = await get_page(browser)
@@ -80,7 +97,7 @@ async def cmd_scrape_full():
 
             for i, keyword in enumerate(config.KEYWORDS):
                 print(f"\n[{i+1}/{len(config.KEYWORDS)}] Scraping keyword: '{keyword}'")
-                jobs = await scrape_keyword(page, keyword)
+                jobs = await scrape_keyword(page, keyword, known_uids=known_uids)
                 if jobs:
                     inserted, updated = upsert_jobs(jobs)
                     total_new += inserted
@@ -91,7 +108,16 @@ async def cmd_scrape_full():
                     log.info(f"Keyword '{keyword}': no jobs found")
                     print(f"  → No jobs found for '{keyword}'")
 
-                if i < len(config.KEYWORDS) - 1:
+                # Memory cleanup every 5 keywords to prevent OOM (exit code 137)
+                if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
+                    print(f"  🧹 Memory cleanup (processed {i+1} keywords)...")
+                    await page.close()
+                    import gc
+                    gc.collect()
+                    await asyncio.sleep(2)
+                    page = await get_page(browser)
+                    await warmup_cloudflare(page)
+                elif i < len(config.KEYWORDS) - 1:
                     print("  ⏳ Cooling down between keywords...")
                     await human_delay(8, 15)
         finally:
@@ -109,6 +135,11 @@ async def cmd_scrape_new():
     log.info("Daily scrape started")
     total_new = 0
 
+    # Load known UIDs for duplicate skipping
+    known_uids = get_all_job_uids() if config.DUPLICATE_SKIP_ENABLED else None
+    if known_uids is not None:
+        log.info(f"Duplicate skip enabled: {len(known_uids)} known UIDs loaded")
+
     async with async_playwright() as pw:
         browser, _ = await launch_chrome_and_connect(pw)
         page = await get_page(browser)
@@ -117,13 +148,22 @@ async def cmd_scrape_new():
 
             for i, keyword in enumerate(config.KEYWORDS):
                 print(f"[{i+1}/{len(config.KEYWORDS)}] Checking new: '{keyword}'")
-                jobs = await scrape_keyword(page, keyword, max_pages=2)
+                jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=known_uids)
                 if jobs:
                     inserted, updated = upsert_jobs(jobs)
                     total_new += inserted
                     print(f"  → +{inserted} new jobs")
 
-                if i < len(config.KEYWORDS) - 1:
+                # Memory cleanup every 5 keywords to prevent OOM
+                if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
+                    print(f"  🧹 Memory cleanup (processed {i+1} keywords)...")
+                    await page.close()
+                    import gc
+                    gc.collect()
+                    await asyncio.sleep(2)
+                    page = await get_page(browser)
+                    await warmup_cloudflare(page)
+                elif i < len(config.KEYWORDS) - 1:
                     await human_delay(6, 12)
         finally:
             await browser.close()
@@ -135,13 +175,20 @@ async def cmd_scrape_new():
 async def cmd_scrape_keyword(keyword: str, max_pages: int, start_page: int = 1):
     """Scrape a specific keyword."""
     init_db()
+
+    # Load known UIDs for duplicate skipping
+    known_uids = get_all_job_uids() if config.DUPLICATE_SKIP_ENABLED else None
+    if known_uids is not None:
+        log.info(f"Duplicate skip enabled: {len(known_uids)} known UIDs loaded")
+
     async with async_playwright() as pw:
         browser, _ = await launch_chrome_and_connect(pw)
         page = await get_page(browser)
         try:
             await warmup_cloudflare(page)
             print(f"Scraping keyword: '{keyword}' (pages {start_page}→{start_page + max_pages - 1})")
-            jobs = await scrape_keyword(page, keyword, max_pages=max_pages, start_page=start_page, save_fn=upsert_jobs)
+            jobs = await scrape_keyword(page, keyword, max_pages=max_pages, start_page=start_page,
+                                        save_fn=upsert_jobs, known_uids=known_uids)
             print(f"\n✓ Done. {get_job_count()} total jobs in DB")
         finally:
             await browser.close()
@@ -208,6 +255,497 @@ def cmd_stats():
         print(f"  {s['skill']}: {s['count']}")
 
 
+def cmd_health():
+    """Run health checks on all system components."""
+    print("\n" + "="*50)
+    print("SYSTEM HEALTH CHECK")
+    print("="*50)
+
+    results = {}
+
+    # 1. Database check
+    try:
+        init_db()
+        count = get_job_count()
+        results['database'] = {'status': 'ok', 'jobs': count}
+        print(f"\n  Database: OK ({count} jobs)")
+    except Exception as e:
+        results['database'] = {'status': 'error', 'message': str(e)}
+        print(f"\n  Database: FAILED - {e}")
+
+    # 2. AI provider checks
+    try:
+        from ai_client import check_provider_health, load_ai_config
+        cfg = load_ai_config()
+        providers = cfg['ai_models']['providers']
+
+        for name in providers:
+            health = check_provider_health(name)
+            if health['success']:
+                results[f'ai_{name}'] = {'status': 'ok', 'models': health.get('models', [])}
+                print(f"  AI ({name}): OK - {health['message']}")
+            else:
+                results[f'ai_{name}'] = {'status': 'error', 'message': health['message']}
+                print(f"  AI ({name}): FAILED - {health['message']}")
+    except Exception as e:
+        results['ai'] = {'status': 'error', 'message': str(e)}
+        print(f"  AI providers: FAILED - {e}")
+
+    # 3. API usage check
+    try:
+        from api_usage_tracker import check_daily_limit
+        for provider in ['groq', 'ollama_local']:
+            usage = check_daily_limit(provider=provider)
+            results[f'usage_{provider}'] = usage
+            status_icon = "OK" if not usage['exceeded'] else "EXCEEDED"
+            if usage['warning']:
+                status_icon = "WARNING"
+            print(f"  API usage ({provider}): {status_icon} - {usage['used']:,}/{usage['limit']:,} tokens ({usage['percentage']:.1f}%)")
+    except Exception as e:
+        results['usage'] = {'status': 'error', 'message': str(e)}
+        print(f"  API usage: FAILED - {e}")
+
+    # 4. Chrome check
+    import shutil
+    chrome_path = shutil.which("google-chrome") or shutil.which("chromium")
+    chrome_mac = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if chrome_mac.exists():
+        chrome_path = str(chrome_mac)
+
+    if chrome_path:
+        results['chrome'] = {'status': 'ok', 'path': chrome_path}
+        print(f"  Chrome: OK ({chrome_path})")
+    else:
+        results['chrome'] = {'status': 'not_found'}
+        print(f"  Chrome: NOT FOUND")
+
+    # 5. Config files check
+    config_files = ['ai_models.yaml', 'job_preferences.yaml', 'user_profile.yaml',
+                    'projects.yaml', 'proposal_guidelines.yaml']
+    missing_configs = []
+    for cf in config_files:
+        if not (config.CONFIG_DIR / cf).exists():
+            missing_configs.append(cf)
+
+    if missing_configs:
+        results['config'] = {'status': 'missing', 'files': missing_configs}
+        print(f"  Config: MISSING - {', '.join(missing_configs)}")
+    else:
+        results['config'] = {'status': 'ok'}
+        print(f"  Config: OK (all {len(config_files)} files present)")
+
+    print("\n" + "="*50)
+
+    # Overall status
+    has_errors = any(
+        isinstance(v, dict) and v.get('status') in ('error', 'not_found', 'missing')
+        for v in results.values()
+    )
+    if has_errors:
+        print("Overall: ISSUES DETECTED (see above)")
+    else:
+        print("Overall: ALL SYSTEMS OK")
+    print("="*50 + "\n")
+
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Monitor Pipeline Functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def acquire_lock() -> bool:
+    """
+    Acquire PID-based lock file. Returns True if acquired, False if already running.
+
+    Lock file format: {"pid": <int>, "started_at": "<ISO timestamp>"}
+    """
+    if MONITOR_LOCK_FILE.exists():
+        # Read existing lock file
+        try:
+            with open(MONITOR_LOCK_FILE) as f:
+                lock_data = json.load(f)
+                existing_pid = lock_data.get("pid")
+
+            # Check if process is still alive
+            if existing_pid:
+                try:
+                    # os.kill with signal 0 checks if process exists without killing it
+                    os.kill(existing_pid, 0)
+                    # Process exists, lock is valid
+                    started_at = lock_data.get("started_at", "unknown time")
+                    log.warning(f"Monitor already running (PID {existing_pid}, started {started_at})")
+                    print(f"⚠️  Monitor already running (PID {existing_pid}). Skipping this run.")
+                    return False
+                except (OSError, ProcessLookupError):
+                    # Process doesn't exist, stale lock file
+                    log.info(f"Stale lock file found (PID {existing_pid}), removing")
+                    MONITOR_LOCK_FILE.unlink()
+        except (json.JSONDecodeError, KeyError, FileNotFoundError):
+            # Corrupted lock file, remove it
+            log.warning("Corrupted lock file found, removing")
+            MONITOR_LOCK_FILE.unlink()
+
+    # Create new lock file
+    lock_data = {
+        "pid": os.getpid(),
+        "started_at": datetime.now().isoformat()
+    }
+    with open(MONITOR_LOCK_FILE, "w") as f:
+        json.dump(lock_data, f, indent=2)
+
+    return True
+
+
+def release_lock():
+    """Release lock file."""
+    if MONITOR_LOCK_FILE.exists():
+        MONITOR_LOCK_FILE.unlink()
+        log.info("Lock file released")
+
+
+def write_health_check(status: str, duration_seconds: float, jobs_scraped: int = 0,
+                       jobs_new: int = 0, jobs_classified: int = 0, jobs_matched: int = 0,
+                       proposals_generated: int = 0, proposals_failed: int = 0,
+                       error_message: str = None):
+    """
+    Write health check status to last_run_status.json.
+
+    Args:
+        status: "success", "partial_failure", or "failure"
+        duration_seconds: Total pipeline duration
+        jobs_scraped: Total jobs scraped
+        jobs_new: New jobs added to DB
+        jobs_classified: Jobs classified
+        jobs_matched: Jobs that matched preferences
+        proposals_generated: Proposals successfully generated
+        proposals_failed: Proposals that failed to generate
+        error_message: Error message if status is failure or partial_failure
+    """
+    health_data = {
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "duration_seconds": round(duration_seconds, 2),
+        "jobs_scraped": jobs_scraped,
+        "jobs_new": jobs_new,
+        "jobs_classified": jobs_classified,
+        "jobs_matched": jobs_matched,
+        "proposals_generated": proposals_generated,
+        "proposals_failed": proposals_failed,
+        "error": error_message
+    }
+
+    with open(LAST_RUN_STATUS_FILE, "w") as f:
+        json.dump(health_data, f, indent=2)
+
+    log.info(f"Health check written: {status}")
+
+
+def setup_monitor_logging():
+    """Configure logging for monitor pipeline (separate log file)."""
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Create file handler for monitor.log
+    monitor_handler = logging.FileHandler(MONITOR_LOG_FILE, encoding="utf-8")
+    monitor_handler.setLevel(logging.INFO)
+    monitor_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                         datefmt="%Y-%m-%d %H:%M:%S")
+    )
+
+    # Add to root logger
+    logging.getLogger().addHandler(monitor_handler)
+    log.info("="*70)
+    log.info("Monitor pipeline started")
+
+
+async def cmd_monitor_new(dry_run: bool = False):
+    """
+    Monitor pipeline: scrape → classify → match → generate proposals.
+
+    Pipeline stages:
+    1. Scrape new jobs (page 1-2 per keyword)
+    2. Delta detection (find truly new jobs)
+    3. Classify new jobs with AI
+    4. Match jobs against preferences
+    5. Generate proposals for matched jobs
+
+    Args:
+        dry_run: If True, skip API calls (classification and proposal generation)
+    """
+    start_time = time.time()
+
+    # Setup
+    init_db()
+    setup_monitor_logging()
+
+    # Acquire lock
+    if not acquire_lock():
+        return  # Already running
+
+    # Initialize counters for health check
+    jobs_scraped = 0
+    jobs_new = 0
+    jobs_classified = 0
+    jobs_matched = 0
+    proposals_generated = 0
+    proposals_failed = 0
+    error_message = None
+    status = "success"
+
+    try:
+        print("\n" + "="*70)
+        print("🤖 MONITOR PIPELINE" + (" (DRY RUN)" if dry_run else ""))
+        print("="*70)
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 1: Scrape new jobs
+        # ──────────────────────────────────────────────────────────────────────
+        print("\n[1/5] 📡 Scraping new jobs (page 1-2 per keyword)...")
+        log.info("Stage 1: Scraping started")
+
+        # Get current job UIDs before scraping
+        existing_uids = get_all_job_uids()
+        log.info(f"Existing jobs in DB: {len(existing_uids)}")
+
+        # Scrape
+        scraped_uids = set()
+        async with async_playwright() as pw:
+            browser, _ = await launch_chrome_and_connect(pw)
+            page = await get_page(browser)
+            try:
+                await warmup_cloudflare(page)
+
+                # Use existing_uids for duplicate skipping during scrape
+                scrape_known_uids = set(existing_uids) if config.DUPLICATE_SKIP_ENABLED else None
+
+                for i, keyword in enumerate(config.KEYWORDS):
+                    print(f"  [{i+1}/{len(config.KEYWORDS)}] Scraping: '{keyword}'")
+                    jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=scrape_known_uids)
+
+                    if jobs:
+                        # Track UIDs from this scrape
+                        scraped_uids.update(job["uid"] for job in jobs)
+
+                        # Save to DB
+                        inserted, updated = upsert_jobs(jobs)
+                        jobs_scraped += len(jobs)
+                        jobs_new += inserted
+                        print(f"     → +{inserted} new, {updated} updated")
+
+                    # Memory cleanup every 5 keywords to prevent OOM
+                    if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
+                        print(f"     🧹 Memory cleanup (processed {i+1} keywords)...")
+                        await page.close()
+                        import gc
+                        gc.collect()
+                        await asyncio.sleep(2)  # Let resources be released
+                        page = await get_page(browser)
+                        await warmup_cloudflare(page)
+                    elif i < len(config.KEYWORDS) - 1:
+                        await human_delay(6, 12)
+            finally:
+                await browser.close()
+
+        print(f"  ✅ Scraped {jobs_scraped} jobs, {jobs_new} new")
+        log.info(f"Stage 1 complete: {jobs_scraped} scraped, {jobs_new} new")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 2: Delta detection
+        # ──────────────────────────────────────────────────────────────────────
+        print("\n[2/5] 🔍 Detecting new jobs...")
+        log.info("Stage 2: Delta detection")
+
+        # Find truly new UIDs (scraped but not in existing DB)
+        new_uids = scraped_uids - existing_uids
+        print(f"  ✅ Found {len(new_uids)} truly new jobs")
+        log.info(f"Stage 2 complete: {len(new_uids)} new jobs identified")
+
+        if not new_uids:
+            print("\n⏭️  No new jobs to process. Pipeline complete.")
+            duration = time.time() - start_time
+            write_health_check("success", duration, jobs_scraped, jobs_new, 0, 0, 0, 0)
+            return
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 3: Classify new jobs
+        # ──────────────────────────────────────────────────────────────────────
+        print(f"\n[3/5] 🏷️  Classifying {len(new_uids)} new jobs...")
+        log.info("Stage 3: Classification started")
+
+        if dry_run:
+            print("  ⏭️  DRY RUN - Skipping classification")
+            jobs_classified = 0
+        else:
+            try:
+                from classifier.ai import classify_all
+                # classify_all() runs on all unclassified jobs, which includes our new ones
+                classify_all()
+                jobs_classified = len(new_uids)  # Assume all classified successfully
+                print(f"  ✅ Classified {jobs_classified} jobs")
+                log.info(f"Stage 3 complete: {jobs_classified} jobs classified")
+            except Exception as e:
+                log.error(f"Classification failed: {e}")
+                print(f"  ❌ Classification failed: {e}")
+                error_message = f"Classification error: {e}"
+                status = "partial_failure"
+                jobs_classified = 0
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 4: Match jobs
+        # ──────────────────────────────────────────────────────────────────────
+        print(f"\n[4/5] 🎯 Matching jobs against preferences...")
+        log.info("Stage 4: Matching started")
+
+        try:
+            from matcher import get_matching_jobs, load_preferences
+
+            # Get all jobs (we need full job data for matching)
+            all_jobs = get_all_jobs()
+            new_jobs = [job for job in all_jobs if job["uid"] in new_uids]
+
+            # Load preferences and match
+            preferences = load_preferences()
+            matched_jobs = get_matching_jobs(new_jobs, preferences)
+            jobs_matched = len(matched_jobs)
+
+            print(f"  ✅ {jobs_matched} jobs matched (threshold: {preferences.get('threshold', 70)})")
+            log.info(f"Stage 4 complete: {jobs_matched} jobs matched")
+
+            if matched_jobs:
+                print("\n  Top matches:")
+                for i, job in enumerate(matched_jobs[:5], 1):
+                    score = job.get("match_score", 0)
+                    title = job.get("title", "")[:60]
+                    print(f"    {i}. [{score:.1f}] {title}")
+
+        except Exception as e:
+            log.error(f"Matching failed: {e}")
+            print(f"  ❌ Matching failed: {e}")
+            error_message = f"Matching error: {e}"
+            status = "failure"
+            duration = time.time() - start_time
+            write_health_check(status, duration, jobs_scraped, jobs_new,
+                             jobs_classified, 0, 0, 0, error_message)
+            return
+
+        if not matched_jobs:
+            print("\n⏭️  No jobs matched preferences. Pipeline complete.")
+            duration = time.time() - start_time
+            write_health_check("success", duration, jobs_scraped, jobs_new,
+                             jobs_classified, jobs_matched, 0, 0)
+            return
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 5: Generate proposals
+        # ──────────────────────────────────────────────────────────────────────
+        print(f"\n[5/5] ✍️  Generating proposals for {jobs_matched} matched jobs...")
+        log.info("Stage 5: Proposal generation started")
+
+        if dry_run:
+            print("  ⏭️  DRY RUN - Skipping proposal generation")
+            print("\n  Would generate proposals for:")
+            for i, job in enumerate(matched_jobs[:10], 1):
+                score = job.get("match_score", 0)
+                title = job.get("title", "")[:60]
+                print(f"    {i}. [{score:.1f}] {title}")
+        else:
+            try:
+                from proposal_generator import generate_proposals_batch
+
+                # Generate proposals
+                results = generate_proposals_batch(matched_jobs, dry_run=False)
+                proposals_generated = results.get("generated", 0)
+                proposals_failed = results.get("failed", 0)
+
+                print(f"  ✅ Generated {proposals_generated} proposals")
+                if proposals_failed > 0:
+                    print(f"  ⚠️  {proposals_failed} proposals failed")
+                    status = "partial_failure"
+                    error_message = f"{proposals_failed} proposals failed to generate"
+
+                log.info(f"Stage 5 complete: {proposals_generated} generated, {proposals_failed} failed")
+
+            except Exception as e:
+                log.error(f"Proposal generation failed: {e}")
+                print(f"  ❌ Proposal generation failed: {e}")
+                error_message = f"Proposal generation error: {e}"
+                status = "failure"
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Stage 6: Send email notification (if proposals were generated)
+        # ──────────────────────────────────────────────────────────────────────
+        if not dry_run and proposals_generated > 0:
+            print(f"\n[6/6] 📧 Sending email notification...")
+            log.info("Stage 6: Email notification")
+
+            try:
+                from notifier import send_notification
+                from database.db import get_proposals
+
+                # Get recently generated proposals (from this run)
+                all_proposals = get_proposals()
+                # Filter to only pending proposals (newly generated)
+                recent_proposals = [p for p in all_proposals if p.get('status') == 'pending_review']
+
+                # Build monitor stats for email
+                monitor_stats = {
+                    'jobs_matched': jobs_matched,
+                    'proposals_generated': proposals_generated,
+                    'proposals_failed': proposals_failed,
+                    'timestamp': datetime.now().isoformat(),
+                    'duration_seconds': time.time() - start_time
+                }
+
+                # Send notification
+                email_sent = send_notification(recent_proposals, monitor_stats, dry_run=False)
+
+                if email_sent:
+                    print(f"  ✅ Email notification sent/saved")
+                else:
+                    print(f"  ⚠️  Email notification failed (non-critical)")
+
+                log.info(f"Stage 6 complete: notification {'sent' if email_sent else 'failed'}")
+
+            except Exception as e:
+                # Email failure is non-critical, don't fail the pipeline
+                log.warning(f"Email notification failed (non-critical): {e}")
+                print(f"  ⚠️  Email notification failed: {e}")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Pipeline complete
+        # ──────────────────────────────────────────────────────────────────────
+        duration = time.time() - start_time
+
+        print("\n" + "="*70)
+        print("✅ PIPELINE COMPLETE" + (" (DRY RUN)" if dry_run else ""))
+        print(f"   Duration: {duration:.1f}s")
+        print(f"   Scraped: {jobs_scraped} jobs ({jobs_new} new)")
+        print(f"   Classified: {jobs_classified} jobs")
+        print(f"   Matched: {jobs_matched} jobs")
+        if not dry_run:
+            print(f"   Proposals: {proposals_generated} generated, {proposals_failed} failed")
+        print("="*70 + "\n")
+
+        log.info(f"Pipeline complete: {status} in {duration:.1f}s")
+
+    except Exception as e:
+        # Unhandled exception - mark as failure
+        log.error(f"Pipeline failed with unhandled exception: {e}", exc_info=True)
+        print(f"\n❌ Pipeline failed: {e}")
+        status = "failure"
+        error_message = str(e)
+        duration = time.time() - start_time
+
+    finally:
+        # Always write health check and release lock
+        duration = time.time() - start_time
+        write_health_check(status, duration, jobs_scraped, jobs_new,
+                         jobs_classified, jobs_matched, proposals_generated,
+                         proposals_failed, error_message)
+        release_lock()
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(description="Upwork AI Jobs Scraper & Analyzer")
@@ -223,6 +761,11 @@ def main():
     scrape_p.add_argument("--pages", type=int, default=3000, help="Max pages per keyword (default: 3000)")
     scrape_p.add_argument("--start-page", type=int, default=1, help="Start from this page number (for resuming)")
 
+    # monitor
+    monitor_p = subparsers.add_parser("monitor", help="Automated pipeline: scrape → classify → match → generate")
+    monitor_p.add_argument("--new", action="store_true", help="Run daily monitor (page 1-2 per keyword)")
+    monitor_p.add_argument("--dry-run", action="store_true", help="Test mode: skip API calls (classification & proposals)")
+
     # report
     subparsers.add_parser("report", help="Generate HTML report")
 
@@ -231,6 +774,9 @@ def main():
 
     # stats
     subparsers.add_parser("stats", help="Print quick stats")
+
+    # health
+    subparsers.add_parser("health", help="Run system health checks (DB, AI, Chrome, config)")
 
     args = parser.parse_args()
 
@@ -243,12 +789,20 @@ def main():
             asyncio.run(cmd_scrape_new())
         elif args.keyword:
             asyncio.run(cmd_scrape_keyword(args.keyword, args.pages, args.start_page))
+    elif args.command == "monitor":
+        if args.new:
+            asyncio.run(cmd_monitor_new(dry_run=args.dry_run))
+        else:
+            print("Usage: python main.py monitor --new [--dry-run]")
+            monitor_p.print_help()
     elif args.command == "report":
         cmd_report()
     elif args.command == "dashboard":
         cmd_dashboard()
     elif args.command == "stats":
         cmd_stats()
+    elif args.command == "health":
+        cmd_health()
     else:
         parser.print_help()
 

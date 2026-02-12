@@ -1,6 +1,7 @@
 """Live Streamlit Dashboard for Upwork AI Jobs."""
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -10,21 +11,37 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+import streamlit as st
+
+# ── Streamlit Cloud: set DATABASE_URL from secrets before importing db module ──
+try:
+    if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+        os.environ["DATABASE_URL"] = st.secrets["DATABASE_URL"]
+except Exception:
+    pass  # Not running on Streamlit Cloud or secrets not configured
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
+
+import yaml
 
 import config
 from database.db import (
     init_db,
     get_all_jobs,
+    get_job_by_uid,
     get_favorites,
     add_favorite,
     remove_favorite,
     is_favorite,
     get_favorite_count,
     update_favorite_notes,
+    get_proposals,
+    update_proposal_status,
+    update_proposal_text,
+    update_proposal_rating,
+    get_proposal_analytics,
 )
 from dashboard.analytics import (
     jobs_to_dataframe,
@@ -37,6 +54,9 @@ from dashboard.analytics import (
     keyword_distribution,
     generate_summary,
 )
+from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files
+from ai_client import get_client, test_connection, list_available_models, load_ai_config
+from matcher import score_job as matcher_score_job, load_preferences
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Page Configuration
@@ -75,6 +95,33 @@ PROFILE_SKILLS = {
 # Helper Functions
 # ══════════════════════════════════════════════════════════════════════════════
 
+def is_read_only_mode():
+    """Check if dashboard is in read-only mode (cloud deployment)."""
+    # Check environment variable first
+    if os.getenv('DASHBOARD_READ_ONLY', '').lower() in ('1', 'true', 'yes'):
+        return True
+
+    # Check Streamlit secrets (for cloud deployment)
+    try:
+        if hasattr(st, 'secrets') and 'deployment' in st.secrets:
+            return st.secrets['deployment'].get('read_only', False)
+    except Exception:
+        pass
+
+    return False
+
+
+def should_show_approved_only():
+    """Check if dashboard should only show approved proposals in read-only mode."""
+    try:
+        if hasattr(st, 'secrets') and 'deployment' in st.secrets:
+            return st.secrets['deployment'].get('show_approved_only', False)
+    except Exception:
+        pass
+
+    return False
+
+
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_jobs_data():
     """Load and prepare jobs data with caching."""
@@ -90,8 +137,16 @@ def load_jobs_data():
         if col in df.columns:
             df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else (x or []))
 
-    # Add score
-    df['score'] = df.apply(lambda row: score_job(row), axis=1)
+    # Add unified match score using matcher.score_job()
+    try:
+        preferences = load_preferences()
+        df['score'] = df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
+        df['match_reasons'] = df.apply(lambda row: get_match_reasons(row.to_dict(), preferences), axis=1)
+    except Exception as e:
+        # Fallback to simple scoring if matcher fails
+        st.warning(f"Using fallback scoring (matcher error: {e})")
+        df['score'] = df.apply(lambda row: score_job_fallback(row), axis=1)
+        df['match_reasons'] = [[]]
 
     # Add budget for sorting/filtering
     df['budget'] = df.apply(get_budget, axis=1)
@@ -99,15 +154,33 @@ def load_jobs_data():
     return df, jobs
 
 
-def score_job(row) -> int:
-    """Score a job 0-100 based on profile match."""
+def score_job_unified(job_dict: dict, preferences: dict) -> float:
+    """Score a job using the unified matcher.score_job()."""
+    try:
+        score, reasons = matcher_score_job(job_dict, preferences)
+        return score
+    except Exception:
+        return score_job_fallback(job_dict)
+
+
+def get_match_reasons(job_dict: dict, preferences: dict) -> list:
+    """Get match reasons from matcher.score_job()."""
+    try:
+        score, reasons = matcher_score_job(job_dict, preferences)
+        return reasons
+    except Exception:
+        return []
+
+
+def score_job_fallback(row) -> int:
+    """Fallback scoring if matcher fails (simplified version)."""
     score = 0
 
     # Skill match (0-50)
     skills = row.get('skills_list', [])
     if skills:
         matched = sum(1 for s in skills if s.lower() in PROFILE_SKILLS)
-        skill_pct = matched / len(skills)
+        skill_pct = matched / len(skills) if skills else 0
         score += int(skill_pct * 50)
     else:
         score += 10
@@ -131,34 +204,12 @@ def score_job(row) -> int:
             elif hr_min >= 20:
                 score += 10
 
-    # Description relevance (0-15)
-    text = str(row.get('title', '')) + ' ' + str(row.get('description', ''))
-    text = text.lower()
-    relevance_terms = [
-        ('full stack', 3), ('fullstack', 3), ('full-stack', 3),
-        ('web app', 3), ('saas', 3), ('dashboard', 2),
-        ('api', 2), ('chatbot', 3), ('ai agent', 3),
-        ('rag', 3), ('llm', 2), ('gpt', 2), ('openai', 2),
-        ('langchain', 3), ('automation', 2),
-        ('react', 2), ('next.js', 2), ('python', 2), ('node', 2),
-        ('integration', 2), ('mvp', 3), ('prototype', 2),
-    ]
-    relevance_score = 0
-    for term, pts in relevance_terms:
-        if term in text:
-            relevance_score += pts
-    score += min(relevance_score, 15)
-
     # Recency (0-10)
     posted = str(row.get('posted_text', '')).lower()
     if any(w in posted for w in ['minute', 'hour', 'just now']):
         score += 10
     elif 'yesterday' in posted or '1 day' in posted:
         score += 7
-    elif '2 day' in posted or '3 day' in posted:
-        score += 5
-    elif 'day' in posted:
-        score += 3
 
     return min(score, 100)
 
@@ -234,6 +285,69 @@ def sort_jobs(df, sort_by):
     elif sort_by == 'Budget: Low → High':
         return df.sort_values('budget', ascending=True, na_position='last')
     return df
+
+
+def load_monitor_health():
+    """Load monitor health status from last_run_status.json."""
+    status_file = config.DATA_DIR / "last_run_status.json"
+    if not status_file.exists():
+        return None
+
+    try:
+        with open(status_file) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def render_monitor_health_header():
+    """Render monitor health status header in Proposals tab."""
+    health = load_monitor_health()
+
+    if not health:
+        st.info("ℹ️ No monitor runs yet. Run `python main.py monitor --new` to start.")
+        return
+
+    timestamp = datetime.fromisoformat(health['timestamp'])
+    time_diff = datetime.now() - timestamp
+    hours_ago = time_diff.total_seconds() / 3600
+
+    status = health['status']
+    proposals_gen = health.get('proposals_generated', 0)
+    proposals_fail = health.get('proposals_failed', 0)
+    jobs_matched = health.get('jobs_matched', 0)
+
+    # Determine status color and icon
+    if status == 'success':
+        status_icon = "✅"
+        status_color = "green"
+    elif status == 'partial_failure':
+        status_icon = "⚠️"
+        status_color = "orange"
+    else:  # failure
+        status_icon = "❌"
+        status_color = "red"
+
+    # Show warning if stale or failed
+    if hours_ago > 8 or status != 'success':
+        if hours_ago > 8:
+            st.warning(f"⚠️ Monitor last ran **{hours_ago:.1f} hours ago** ({timestamp:%Y-%m-%d %H:%M}). "
+                      f"Consider running `python main.py monitor --new`")
+        if status != 'success':
+            error_msg = health.get('error', 'Unknown error')
+            st.error(f"{status_icon} Last monitor run **{status}**: {error_msg}")
+    else:
+        st.success(f"{status_icon} Last monitor run: **{hours_ago:.1f}h ago** • "
+                  f"{proposals_gen} proposals generated • {jobs_matched} jobs matched")
+
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Last Run", f"{hours_ago:.1f}h ago")
+    col2.metric("Jobs Matched", jobs_matched)
+    col3.metric("Proposals Generated", proposals_gen)
+    col4.metric("Failed", proposals_fail)
+
+    st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -691,6 +805,473 @@ def render_analytics_tab(df):
         st.info("No date data available for timeline")
 
 
+def render_proposals_tab():
+    """Render the Proposals tab with proposal cards and management UI."""
+    st.markdown("### ✍️ Proposals")
+
+    # Check read-only mode
+    read_only = is_read_only_mode()
+    show_approved_only = should_show_approved_only()
+
+    if read_only:
+        st.info("📖 **Read-Only Mode** — Viewing proposals only. Editing and status changes are disabled.")
+
+    # Monitor health header
+    render_monitor_health_header()
+
+    # Proposal analytics section
+    try:
+        analytics = get_proposal_analytics()
+
+        if analytics['total_proposals'] > 0:
+            # Top-level metrics
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total Proposals", analytics['total_proposals'])
+            col2.metric("Acceptance Rate", f"{analytics['acceptance_rate']}%",
+                       help="% of proposals that were approved or submitted")
+            col3.metric("Avg Match Score", f"{analytics['avg_match_score']}/100")
+            col4.metric("Avg Rating",
+                       f"{'⭐' * int(analytics['avg_rating'])}" if analytics['avg_rating'] else "N/A",
+                       help=f"{analytics['avg_rating']:.1f}/5.0" if analytics['avg_rating'] else "No ratings yet")
+            col5.metric("Submitted", analytics['submitted'])
+
+            # Rating distribution chart (if any ratings exist)
+            if analytics['rating_distribution']:
+                st.markdown("**Quality Ratings Distribution:**")
+                rating_data = pd.DataFrame([
+                    {"Rating": f"{'⭐' * r}", "Count": count}
+                    for r, count in sorted(analytics['rating_distribution'].items())
+                ])
+
+                fig = px.bar(
+                    rating_data,
+                    x='Rating',
+                    y='Count',
+                    color='Count',
+                    color_continuous_scale='Greens'
+                )
+                fig.update_layout(showlegend=False, height=250, xaxis_title="", yaxis_title="Proposals")
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+    except Exception as e:
+        log.warning(f"Failed to load proposal analytics: {e}")
+
+    # Load proposals
+    proposals = get_proposals()
+
+    if not proposals:
+        st.info("📝 No proposals generated yet. Run the monitor pipeline to generate proposals:")
+        st.code("python main.py monitor --new")
+        return
+
+    # Convert to dataframe for easier filtering
+    prop_df = pd.DataFrame(proposals)
+
+    # Filter to approved only in read-only mode if configured
+    if read_only and show_approved_only:
+        prop_df = prop_df[prop_df['status'] == 'approved']
+        if prop_df.empty:
+            st.info("📝 No approved proposals yet.")
+            return
+
+    # Initialize session state for bulk selection (only if not read-only)
+    if not read_only and 'selected_proposals' not in st.session_state:
+        st.session_state.selected_proposals = set()
+
+    # Bulk actions bar (only if not read-only)
+    if not read_only and st.session_state.selected_proposals:
+        st.info(f"✅ {len(st.session_state.selected_proposals)} proposal(s) selected")
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            if st.button("✅ Approve Selected", width="stretch"):
+                for uid in st.session_state.selected_proposals:
+                    update_proposal_status(uid, 'approved')
+                st.success(f"✅ Approved {len(st.session_state.selected_proposals)} proposals")
+                st.session_state.selected_proposals.clear()
+                st.rerun()
+
+        with col2:
+            if st.button("❌ Reject Selected", width="stretch"):
+                for uid in st.session_state.selected_proposals:
+                    update_proposal_status(uid, 'rejected')
+                st.success(f"Rejected {len(st.session_state.selected_proposals)} proposals")
+                st.session_state.selected_proposals.clear()
+                st.rerun()
+
+        with col3:
+            if st.button("🔄 Reset Selected", width="stretch"):
+                for uid in st.session_state.selected_proposals:
+                    update_proposal_status(uid, 'pending_review')
+                st.success(f"Reset {len(st.session_state.selected_proposals)} proposals")
+                st.session_state.selected_proposals.clear()
+                st.rerun()
+
+        with col4:
+            if st.button("🗑️ Clear Selection", width="stretch"):
+                st.session_state.selected_proposals.clear()
+                st.rerun()
+
+        st.markdown("---")
+
+    # Status filter
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        status_options = ['All Status'] + sorted(prop_df['status'].unique().tolist())
+        selected_status = st.selectbox("Filter by Status", status_options)
+    with col2:
+        sort_by = st.selectbox(
+            "Sort by",
+            ['Newest Jobs', 'Highest Match', 'Recently Generated', 'Status'],
+            label_visibility='collapsed'
+        )
+    with col3:
+        if st.button("📥 Export Proposals", width="stretch"):
+            export_df = prop_df[['job_uid', 'status', 'match_score', 'proposal_text',
+                                'generated_at', 'reviewed_at']]
+            csv = export_df.to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                csv,
+                f"proposals_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                "text/csv",
+                width="stretch"
+            )
+
+    # Apply filter
+    if selected_status != 'All Status':
+        prop_df = prop_df[prop_df['status'] == selected_status]
+
+    # Sort
+    if sort_by == 'Newest Jobs':
+        prop_df = prop_df.sort_values('posted_date_estimated', ascending=False, na_position='last')
+    elif sort_by == 'Highest Match':
+        prop_df = prop_df.sort_values('match_score', ascending=False)
+    elif sort_by == 'Recently Generated':
+        prop_df = prop_df.sort_values('generated_at', ascending=False)
+    elif sort_by == 'Status':
+        prop_df = prop_df.sort_values('status')
+
+    # Stats
+    total = len(proposals)
+    pending = len([p for p in proposals if p['status'] == 'pending_review'])
+    approved = len([p for p in proposals if p['status'] == 'approved'])
+    submitted = len([p for p in proposals if p['status'] == 'submitted'])
+    rejected = len([p for p in proposals if p['status'] == 'rejected'])
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Proposals", total)
+    col2.metric("Pending Review", pending)
+    col3.metric("Approved", approved)
+    col4.metric("Submitted", submitted)
+    col5.metric("Rejected", rejected)
+
+    st.markdown("---")
+
+    # Show filtered count
+    if len(prop_df) < total:
+        st.markdown(f"*Showing {len(prop_df)} of {total} proposals*")
+
+    # Render proposal cards
+    for idx, row in prop_df.iterrows():
+        render_proposal_card(row.to_dict(), read_only=read_only)
+
+
+def render_proposal_card(prop, read_only=False):
+    """Render a single proposal card with job details and proposal text.
+
+    Args:
+        prop: Proposal data dictionary
+        read_only: If True, hide all editing and status change buttons
+    """
+    job_uid = prop['job_uid']
+    status = prop['status']
+    match_score = prop.get('match_score', 0)
+    proposal_text = prop.get('edited_text') or prop.get('proposal_text', '')
+    user_edited = prop.get('user_edited', 0)
+    match_reasons = prop.get('match_reasons', '')
+
+    # Parse match reasons JSON
+    try:
+        reasons = json.loads(match_reasons) if match_reasons else []
+    except (json.JSONDecodeError, TypeError):
+        reasons = []
+
+    # Status badge styling
+    status_colors = {
+        'pending_review': ('🟡', '#f57c00', 'Pending Review'),
+        'approved': ('🟢', '#14a800', 'Approved'),
+        'submitted': ('🔵', '#1976d2', 'Submitted'),
+        'rejected': ('🔴', '#d32f2f', 'Rejected'),
+        'failed': ('❌', '#9e9e9e', 'Failed')
+    }
+    status_icon, border_color, status_label = status_colors.get(status, ('⚪', '#dee2e6', status))
+
+    # Get job details (from jobs table)
+    job = get_job_by_uid(job_uid)
+
+    if not job:
+        st.error(f"❌ Job {job_uid} not found in database")
+        return
+
+    job_title = job['title']
+    job_url = job['url']
+    if job_url and not job_url.startswith('http'):
+        job_url = f"https://www.upwork.com{job_url}"
+
+    # Card container
+    with st.container():
+        st.markdown(f"""
+        <div style="border-left: 4px solid {border_color}; padding: 16px;
+                    background: white; border-radius: 8px; margin-bottom: 24px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+        """, unsafe_allow_html=True)
+
+        # Header with selection checkbox (only if not read-only)
+        if read_only:
+            col2, col3, col4 = st.columns([5, 1, 1])
+        else:
+            col1, col2, col3, col4 = st.columns([0.3, 4.7, 1, 1])
+            with col1:
+                # Bulk selection checkbox
+                is_selected = job_uid in st.session_state.get('selected_proposals', set())
+                if st.checkbox("", value=is_selected, key=f"select_{job_uid}", label_visibility='collapsed'):
+                    if 'selected_proposals' not in st.session_state:
+                        st.session_state.selected_proposals = set()
+                    st.session_state.selected_proposals.add(job_uid)
+                else:
+                    if 'selected_proposals' in st.session_state and job_uid in st.session_state.selected_proposals:
+                        st.session_state.selected_proposals.discard(job_uid)
+        with col2:
+            st.markdown(f"### [{job_title}]({job_url})")
+        with col3:
+            st.markdown(f"<div style='text-align: center; font-size: 20px;'>{status_icon} {status_label}</div>",
+                       unsafe_allow_html=True)
+        with col4:
+            st.markdown(f"<div style='text-align: right; font-size: 24px;'>🎯 <b>{match_score:.0f}</b></div>",
+                       unsafe_allow_html=True)
+
+        # Match reasons
+        if reasons:
+            st.markdown("**Match Reasons:**")
+            for reason in reasons[:5]:
+                criterion = reason.get('criterion', '')
+                score = reason.get('score', 0)
+                detail = reason.get('detail', '')
+                weight = reason.get('weight', 0)
+                points = score * weight
+                st.markdown(f"- **{criterion}**: {score:.2f}/1.00 × {weight} = {points:.1f} pts — {detail}")
+
+        st.markdown("---")
+
+        # Proposal text display with inline editing
+        st.markdown("**Proposal:**")
+        if user_edited:
+            st.info("✏️ This proposal has been edited")
+
+        # Edit mode toggle and copy button (hide edit button in read-only mode)
+        edit_key = f"edit_mode_{job_uid}"
+        copy_key = f"copy_mode_{job_uid}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+        if copy_key not in st.session_state:
+            st.session_state[copy_key] = False
+
+        if read_only:
+            # Read-only: only show copy button
+            col_a, col_b = st.columns([6, 1])
+            with col_b:
+                if st.button("📋 Copy",
+                            key=f"toggle_copy_{job_uid}",
+                            width="stretch",
+                            help="Show proposal in copyable format"):
+                    st.session_state[copy_key] = not st.session_state[copy_key]
+                    st.rerun()
+        else:
+            # Full mode: show copy and edit buttons
+            col_a, col_b, col_c = st.columns([5, 1, 1])
+            with col_b:
+                if st.button("📋 Copy",
+                            key=f"toggle_copy_{job_uid}",
+                            width="stretch",
+                            help="Show proposal in copyable format"):
+                    st.session_state[copy_key] = not st.session_state[copy_key]
+                    st.rerun()
+            with col_c:
+                if st.button("✏️ Edit" if not st.session_state[edit_key] else "👁️ View",
+                            key=f"toggle_edit_{job_uid}",
+                            width="stretch"):
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+                    st.session_state[copy_key] = False  # Close copy mode when entering edit mode
+                    st.rerun()
+
+        # Show copyable format if copy mode is active
+        if st.session_state[copy_key]:
+            st.info("💡 Click the copy icon (📋) in the top-right corner of the code block below to copy the proposal")
+            st.code(proposal_text, language=None)
+
+        # Show editor or read-only view
+        if not read_only and st.session_state[edit_key]:
+            # Edit mode - text area
+            edited_proposal = st.text_area(
+                "Edit your proposal",
+                value=proposal_text,
+                height=300,
+                key=f"proposal_editor_{job_uid}",
+                label_visibility='collapsed'
+            )
+
+            # Word count for edited text
+            edit_word_count = len(edited_proposal.split())
+            edit_char_count = len(edited_proposal)
+
+            # Show count with color coding based on Upwork limits
+            # Upwork has a 5000 character limit for cover letters
+            char_color = "red" if edit_char_count > 5000 else ("orange" if edit_char_count > 4500 else "green")
+            st.markdown(f"📊 <span style='color: {char_color};'>{edit_word_count} words • {edit_char_count}/5000 characters</span>",
+                       unsafe_allow_html=True)
+
+            # Save button
+            if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", width="stretch"):
+                if update_proposal_text(job_uid, edited_proposal):
+                    st.success("✅ Proposal saved!")
+                    st.session_state[edit_key] = False  # Exit edit mode
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to save proposal")
+        else:
+            # Read-only view
+            st.markdown(f"<div style='background: #f8f9fa; padding: 16px; border-radius: 8px; "
+                       f"white-space: pre-wrap; font-family: system-ui;'>{proposal_text}</div>",
+                       unsafe_allow_html=True)
+
+            word_count = len(proposal_text.split())
+            char_count = len(proposal_text)
+            st.caption(f"📊 {word_count} words • {char_count} characters")
+
+        # User rating section (only show after submission or in submitted state)
+        if not read_only and status in ['submitted', 'approved']:
+            st.markdown("---")
+            st.markdown("**Rate this proposal quality:**")
+
+            # Get current rating
+            current_rating = prop.get('user_rating')
+
+            # Rating buttons (1-5 stars)
+            col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 2])
+
+            with col1:
+                if st.button("⭐" if current_rating != 1 else "⭐ 1", key=f"rate1_{job_uid}", width="stretch"):
+                    update_proposal_rating(job_uid, 1)
+                    st.rerun()
+            with col2:
+                if st.button("⭐" if current_rating != 2 else "⭐ 2", key=f"rate2_{job_uid}", width="stretch"):
+                    update_proposal_rating(job_uid, 2)
+                    st.rerun()
+            with col3:
+                if st.button("⭐" if current_rating != 3 else "⭐ 3", key=f"rate3_{job_uid}", width="stretch"):
+                    update_proposal_rating(job_uid, 3)
+                    st.rerun()
+            with col4:
+                if st.button("⭐" if current_rating != 4 else "⭐ 4", key=f"rate4_{job_uid}", width="stretch"):
+                    update_proposal_rating(job_uid, 4)
+                    st.rerun()
+            with col5:
+                if st.button("⭐" if current_rating != 5 else "⭐ 5", key=f"rate5_{job_uid}", width="stretch"):
+                    update_proposal_rating(job_uid, 5)
+                    st.rerun()
+            with col6:
+                if current_rating:
+                    st.markdown(f"<div style='padding: 8px; text-align: center;'>Current: {'⭐' * current_rating} ({current_rating}/5)</div>",
+                               unsafe_allow_html=True)
+                else:
+                    st.caption("Not rated yet")
+
+        # Action buttons (hide in read-only mode)
+        if not read_only:
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+
+            # State machine: valid transitions
+            valid_transitions = {
+                'pending_review': ['approved', 'rejected'],
+                'approved': ['submitted', 'pending_review'],
+                'submitted': [],  # Terminal state
+                'rejected': ['pending_review'],  # Can reconsider
+                'failed': ['pending_review']  # Can retry
+            }
+
+            allowed_statuses = valid_transitions.get(status, [])
+
+            with col1:
+                if 'approved' in allowed_statuses:
+                    if st.button("✅ Approve", key=f"approve_{job_uid}", width="stretch"):
+                        if update_proposal_status(job_uid, 'approved'):
+                            st.success("✅ Proposal approved!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to update status")
+
+            with col2:
+                if 'rejected' in allowed_statuses:
+                    if st.button("❌ Reject", key=f"reject_{job_uid}", width="stretch"):
+                        if update_proposal_status(job_uid, 'rejected'):
+                            st.success("Proposal rejected")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to update status")
+
+            with col3:
+                if 'submitted' in allowed_statuses:
+                    if st.button("🚀 Mark Submitted", key=f"submit_{job_uid}", width="stretch"):
+                        if update_proposal_status(job_uid, 'submitted'):
+                            st.success("🚀 Marked as submitted!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to update status")
+
+            with col4:
+                if 'pending_review' in allowed_statuses:
+                    if st.button("🔄 Reset to Pending", key=f"reset_{job_uid}", width="stretch"):
+                        if update_proposal_status(job_uid, 'pending_review'):
+                            st.success("🔄 Reset to pending")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to update status")
+
+        # Job details expander
+        with st.expander("📄 View Job Details"):
+            st.markdown(f"**Description:**")
+            st.markdown(job['description'] or 'No description available')
+
+            st.markdown(f"**Budget:** {job['job_type']}")
+            if job['job_type'] == 'Fixed' and job.get('fixed_price'):
+                st.markdown(f"${job['fixed_price']:,.0f}")
+            elif job['job_type'] == 'Hourly' and job.get('hourly_rate_min'):
+                st.markdown(f"${job['hourly_rate_min']:.0f}/hr - ${job.get('hourly_rate_max', 0):.0f}/hr")
+
+            if job.get('experience_level'):
+                st.markdown(f"**Experience:** {job['experience_level']}")
+
+            # AI classification
+            if job.get('categories'):
+                try:
+                    cats = json.loads(job['categories'])
+                    st.markdown(f"**Categories:** {', '.join(cats)}")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if job.get('key_tools'):
+                try:
+                    tools = json.loads(job['key_tools'])
+                    st.markdown(f"**Key Tools:** {', '.join(tools)}")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_favorites_tab():
     """Render the Favorites tab showing all bookmarked jobs."""
     st.markdown("### ⭐ Favorite Jobs")
@@ -716,8 +1297,12 @@ def render_favorites_tab():
     if 'skills' in fav_df.columns:
         fav_df['skills_list'] = fav_df['skills']
 
-    # Add score
-    fav_df['score'] = fav_df.apply(lambda row: score_job(row), axis=1)
+    # Add score using unified matcher
+    try:
+        preferences = load_preferences()
+        fav_df['score'] = fav_df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
+    except Exception:
+        fav_df['score'] = fav_df.apply(lambda row: score_job_fallback(row.to_dict()), axis=1)
 
     # Stats
     col1, col2, col3, col4 = st.columns(4)
@@ -799,60 +1384,456 @@ def render_favorites_tab():
                     st.error("❌ Failed to save notes")
 
 
-def render_settings_tab():
-    """Render the Settings tab."""
-    st.markdown("### ⚙️ Settings")
+def render_scraping_ai_tab():
+    """Render the Scraping & AI config tab."""
+    st.markdown("### Scraping & AI Configuration")
 
-    st.markdown("#### Profile Skills")
-    st.markdown("Edit the skills used for job matching and scoring:")
+    # ── Keywords Section ─────────────────────────────────────────────────────
+    st.subheader("Search Keywords")
+    scraping_cfg = load_yaml_config("scraping.yaml")
+    scraping_data = scraping_cfg.get("scraping", {})
+    current_keywords = scraping_data.get("keywords", config.KEYWORDS)
 
-    # Display current profile skills
-    current_skills = sorted(PROFILE_SKILLS)
-    skills_text = st.text_area(
-        "Skills (one per line)",
-        value="\n".join(current_skills),
-        height=300,
-        help="These skills are used to calculate match scores for jobs"
+    keywords_text = st.text_area(
+        "Keywords (one per line)",
+        value="\n".join(current_keywords),
+        height=200,
+        help="Each keyword will be searched on Upwork. Add or remove lines to change."
     )
 
-    if st.button("💾 Save Skills"):
-        st.success("✅ Skills saved! (Note: Changes are session-only. To persist, update PROFILE_SKILLS in app.py)")
+    # ── Safety Settings ──────────────────────────────────────────────────────
+    st.subheader("Safety Settings")
+    safety = scraping_data.get("safety", {})
+
+    col1, col2 = st.columns(2)
+    with col1:
+        min_delay = st.slider("Min delay between pages (s)", 1, 30,
+                              value=safety.get("min_delay_seconds", 5))
+        scroll_min = st.slider("Min scroll delay (s)", 0.5, 10.0,
+                               value=float(safety.get("scroll_delay_min", 1.0)), step=0.5)
+    with col2:
+        max_delay = st.slider("Max delay between pages (s)", 1, 60,
+                              value=safety.get("max_delay_seconds", 12))
+        scroll_max = st.slider("Max scroll delay (s)", 0.5, 10.0,
+                               value=float(safety.get("scroll_delay_max", 3.0)), step=0.5)
+
+    max_pages = st.number_input("Max pages per session", min_value=1, value=safety.get("max_pages_per_session", 3000))
+    page_timeout = st.number_input("Page load timeout (ms)", min_value=5000, value=safety.get("page_load_timeout", 30000), step=5000)
+
+    # ── Duplicate Handling ───────────────────────────────────────────────────
+    st.subheader("Duplicate Handling")
+    dup_cfg = scraping_data.get("duplicate_handling", {})
+    dup_enabled = st.checkbox("Skip already-scraped jobs", value=dup_cfg.get("enabled", True),
+                              help="Load known job UIDs before scraping and skip duplicates")
+    early_term = st.checkbox("Early termination", value=dup_cfg.get("early_termination", True),
+                             help="Stop scraping a keyword when a full page has zero new jobs")
+    dup_ratio = st.slider("Duplicate ratio threshold (%)", min_value=1, max_value=100,
+                           value=int(dup_cfg.get("ratio_threshold", 0.10) * 100),
+                           help="Stop scraping a keyword when the % of duplicate jobs on a page exceeds this")
+
+    # ── Save Scraping Config ─────────────────────────────────────────────────
+    if st.button("Save Scraping Settings", key="save_scraping"):
+        new_keywords = [k.strip() for k in keywords_text.strip().split("\n") if k.strip()]
+        new_scraping = {
+            "scraping": {
+                "keywords": new_keywords,
+                "url_template": scraping_data.get("url_template", config.SEARCH_URL_TEMPLATE),
+                "safety": {
+                    "min_delay_seconds": min_delay,
+                    "max_delay_seconds": max_delay,
+                    "max_pages_per_session": max_pages,
+                    "scroll_delay_min": scroll_min,
+                    "scroll_delay_max": scroll_max,
+                    "page_load_timeout": page_timeout,
+                },
+                "duplicate_handling": {
+                    "enabled": dup_enabled,
+                    "early_termination": early_term,
+                    "ratio_threshold": dup_ratio / 100,
+                },
+            }
+        }
+        if save_yaml_config("scraping.yaml", new_scraping):
+            st.success(f"Scraping settings saved ({len(new_keywords)} keywords)")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save scraping settings")
 
     st.markdown("---")
 
-    st.markdown("#### Auto-Refresh")
-    auto_refresh = st.checkbox("Enable auto-refresh (5 minutes)", value=False)
-    if auto_refresh:
-        st.info("Dashboard will automatically reload every 5 minutes to fetch new data")
+    # ── AI Model Configuration ───────────────────────────────────────────────
+    st.subheader("AI Model Configuration")
+
+    ai_cfg = load_yaml_config("ai_models.yaml")
+    ai_data = ai_cfg.get("ai_models", {})
+    providers = ai_data.get("providers", {})
+    provider_names = list(providers.keys())
+
+    if not provider_names:
+        st.warning("No AI providers configured. Check config/ai_models.yaml")
+        return
+
+    # Classification model
+    st.markdown("**Classification Model**")
+    class_cfg = ai_data.get("classification", {})
+    col1, col2 = st.columns(2)
+    with col1:
+        class_provider = st.selectbox(
+            "Provider",
+            provider_names,
+            index=provider_names.index(class_cfg.get("provider", provider_names[0]))
+            if class_cfg.get("provider") in provider_names else 0,
+            key="class_provider"
+        )
+    with col2:
+        class_models = providers.get(class_provider, {}).get("models", [])
+        class_model = st.selectbox(
+            "Model",
+            class_models,
+            index=class_models.index(class_cfg.get("model", class_models[0]))
+            if class_cfg.get("model") in class_models else 0,
+            key="class_model"
+        )
+
+    # Proposal generation model
+    st.markdown("**Proposal Generation Model**")
+    prop_cfg = ai_data.get("proposal_generation", {})
+    col1, col2 = st.columns(2)
+    with col1:
+        prop_provider = st.selectbox(
+            "Provider",
+            provider_names,
+            index=provider_names.index(prop_cfg.get("provider", provider_names[0]))
+            if prop_cfg.get("provider") in provider_names else 0,
+            key="prop_provider"
+        )
+    with col2:
+        prop_models = providers.get(prop_provider, {}).get("models", [])
+        prop_model = st.selectbox(
+            "Model",
+            prop_models,
+            index=prop_models.index(prop_cfg.get("model", prop_models[0]))
+            if prop_cfg.get("model") in prop_models else 0,
+            key="prop_model"
+        )
+
+    # Test connection button
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Test Connection", key="test_conn"):
+            with st.spinner("Testing..."):
+                result = test_connection(class_provider)
+            if result["success"]:
+                st.success(f"Connected to {result['provider']}: {result['message']}")
+            else:
+                st.error(f"Failed: {result['message']}")
+
+    # Provider settings
+    st.markdown("**Provider Settings**")
+    for pname, pcfg in providers.items():
+        with st.expander(f"{pcfg.get('name', pname)}"):
+            st.text_input("Base URL", value=pcfg.get("base_url", ""), key=f"url_{pname}", disabled=True)
+            api_key_env = pcfg.get("api_key_env")
+            if api_key_env:
+                env_val = os.environ.get(api_key_env, "")
+                status = "Set" if env_val else "Not set"
+                st.text(f"API Key ({api_key_env}): {status}")
+            else:
+                st.text("API Key: Built-in (no env var needed)")
+
+    # Save AI config
+    if st.button("Save AI Settings", key="save_ai"):
+        # Preserve existing fallback chains when saving
+        class_cfg = {"provider": class_provider, "model": class_model}
+        prop_cfg = {"provider": prop_provider, "model": prop_model}
+        existing_class = ai_data.get("classification", {})
+        existing_prop = ai_data.get("proposal_generation", {})
+        if "fallback" in existing_class:
+            class_cfg["fallback"] = existing_class["fallback"]
+        if "fallback" in existing_prop:
+            prop_cfg["fallback"] = existing_prop["fallback"]
+        new_ai = {
+            "ai_models": {
+                "classification": class_cfg,
+                "proposal_generation": prop_cfg,
+                "providers": providers,
+            }
+        }
+        if save_yaml_config("ai_models.yaml", new_ai):
+            st.success(f"AI settings saved (classification: {class_provider}/{class_model}, proposals: {prop_provider}/{prop_model})")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save AI settings")
 
     st.markdown("---")
 
-    st.markdown("#### Database Info")
-    st.code(f"Database Path: {config.DB_PATH}")
-    st.code(f"Data Directory: {config.DATA_DIR}")
+    # ── Database & Cache ─────────────────────────────────────────────────────
+    st.subheader("Database & Cache")
+    st.code(f"Database: {config.DB_PATH}")
+    st.code(f"Data Dir: {config.DATA_DIR}")
 
-    if st.button("🔄 Clear Cache & Reload"):
+    if st.button("Clear Cache & Reload"):
         st.cache_data.clear()
         st.success("Cache cleared! Reloading...")
         st.rerun()
 
+
+def render_profile_proposals_tab():
+    """Render the Profile & Proposals config tab."""
+    st.markdown("### Profile & Proposals Configuration")
+
+    # ── User Profile ─────────────────────────────────────────────────────────
+    st.subheader("User Profile")
+    profile_cfg = load_yaml_config("user_profile.yaml")
+    profile = profile_cfg.get("profile", {})
+
+    name = st.text_input("Name", value=profile.get("name", ""), key="prof_name")
+    bio = st.text_area("Bio", value=profile.get("bio", "").strip(), height=150, key="prof_bio")
+    years_exp = st.number_input("Years of Experience", min_value=0, value=profile.get("years_experience", 0), key="prof_years")
+
+    specializations = st.text_area(
+        "Specializations (one per line)",
+        value="\n".join(profile.get("specializations", [])),
+        height=100,
+        key="prof_specs"
+    )
+    unique_value = st.text_area("Unique Value Proposition", value=profile.get("unique_value", "").strip(), height=100, key="prof_uv")
+
+    rate_info = profile.get("rate_info", {})
+    col1, col2 = st.columns(2)
+    with col1:
+        hourly_rate = st.number_input("Hourly Rate ($)", min_value=0, value=rate_info.get("hourly", 75), key="prof_hourly")
+    with col2:
+        project_min = st.number_input("Min Project ($)", min_value=0, value=rate_info.get("project_min", 1500), key="prof_projmin")
+
+    skills_text = st.text_area(
+        "Skills (one per line)",
+        value="\n".join(profile.get("skills", [])),
+        height=200,
+        key="prof_skills",
+        help="These skills are used for job matching and scoring"
+    )
+
+    if st.button("Save Profile", key="save_profile"):
+        new_profile = {
+            "profile": {
+                "name": name,
+                "bio": bio + "\n",
+                "years_experience": years_exp,
+                "specializations": [s.strip() for s in specializations.split("\n") if s.strip()],
+                "unique_value": unique_value + "\n",
+                "rate_info": {"hourly": hourly_rate, "project_min": project_min},
+                "skills": [s.strip() for s in skills_text.split("\n") if s.strip()],
+            }
+        }
+        if save_yaml_config("user_profile.yaml", new_profile):
+            st.success("Profile saved!")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save profile")
+
     st.markdown("---")
 
-    st.markdown("#### About")
-    st.markdown("""
-    **Upwork AI Jobs Dashboard**
+    # ── Portfolio Projects ───────────────────────────────────────────────────
+    st.subheader("Portfolio Projects")
+    projects_cfg = load_yaml_config("projects.yaml")
+    projects = projects_cfg.get("projects", [])
 
-    Live Streamlit dashboard for analyzing and finding AI-related freelance jobs on Upwork.
+    for i, proj in enumerate(projects):
+        with st.expander(f"{i+1}. {proj.get('title', 'Untitled Project')}"):
+            proj_title = st.text_input("Title", value=proj.get("title", ""), key=f"proj_title_{i}")
+            proj_desc = st.text_area("Description", value=proj.get("description", "").strip(), height=100, key=f"proj_desc_{i}")
+            proj_techs = st.text_input("Technologies (comma-separated)",
+                                       value=", ".join(proj.get("technologies", [])), key=f"proj_tech_{i}")
+            proj_outcomes = st.text_area("Outcomes", value=proj.get("outcomes", "").strip(), height=80, key=f"proj_out_{i}")
+            proj_url = st.text_input("URL", value=proj.get("url") or "", key=f"proj_url_{i}")
 
-    Features:
-    - 🔍 Real-time filtering and search
-    - 📊 Interactive analytics with Plotly charts
-    - 🎯 AI-powered job matching and scoring
-    - 📥 CSV export
-    - 🔄 Auto-refresh capability
+            # Update in-memory
+            projects[i] = {
+                "title": proj_title,
+                "description": proj_desc + "\n",
+                "technologies": [t.strip() for t in proj_techs.split(",") if t.strip()],
+                "outcomes": proj_outcomes + "\n",
+                "url": proj_url if proj_url else None,
+            }
 
-    Data is cached for 5 minutes to optimize performance.
-    """)
+            if st.button(f"Delete Project {i+1}", key=f"del_proj_{i}"):
+                projects.pop(i)
+                if save_yaml_config("projects.yaml", {"projects": projects}):
+                    st.success("Project deleted!")
+                    st.rerun()
+
+    if st.button("Add New Project", key="add_proj"):
+        projects.append({
+            "title": "New Project",
+            "description": "Description here\n",
+            "technologies": ["Python"],
+            "outcomes": "Outcomes here\n",
+            "url": None,
+        })
+        save_yaml_config("projects.yaml", {"projects": projects})
+        st.rerun()
+
+    if st.button("Save All Projects", key="save_projects"):
+        if save_yaml_config("projects.yaml", {"projects": projects}):
+            st.success(f"Saved {len(projects)} projects!")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save projects")
+
+    st.markdown("---")
+
+    # ── Proposal Guidelines ──────────────────────────────────────────────────
+    st.subheader("Proposal Guidelines")
+    guide_cfg = load_yaml_config("proposal_guidelines.yaml")
+    guidelines = guide_cfg.get("guidelines", {})
+
+    tone = st.selectbox("Tone", ["professional", "friendly", "technical"],
+                        index=["professional", "friendly", "technical"].index(guidelines.get("tone", "professional")),
+                        key="guide_tone")
+    max_length = st.slider("Max Length (words)", 100, 1000, value=guidelines.get("max_length", 300), key="guide_len")
+
+    sections = st.text_area(
+        "Required Sections (one per line)",
+        value="\n".join(guidelines.get("required_sections", [])),
+        height=100,
+        key="guide_sections"
+    )
+    avoid = st.text_area(
+        "Avoid Phrases (one per line)",
+        value="\n".join(guidelines.get("avoid_phrases", [])),
+        height=100,
+        key="guide_avoid"
+    )
+    emphasis = st.text_area(
+        "Emphasis Points (one per line)",
+        value="\n".join(guidelines.get("emphasis", [])),
+        height=100,
+        key="guide_emphasis"
+    )
+
+    if st.button("Save Guidelines", key="save_guidelines"):
+        new_guidelines = {
+            "guidelines": {
+                "tone": tone,
+                "max_length": max_length,
+                "required_sections": [s.strip() for s in sections.split("\n") if s.strip()],
+                "avoid_phrases": [s.strip() for s in avoid.split("\n") if s.strip()],
+                "emphasis": [s.strip() for s in emphasis.split("\n") if s.strip()],
+                "max_daily_proposals": guidelines.get("max_daily_proposals", 20),
+            }
+        }
+        if save_yaml_config("proposal_guidelines.yaml", new_guidelines):
+            st.success("Guidelines saved!")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save guidelines")
+
+    st.markdown("---")
+
+    # ── Job Preferences ──────────────────────────────────────────────────────
+    st.subheader("Job Preferences")
+    pref_cfg = load_yaml_config("job_preferences.yaml")
+    preferences = pref_cfg.get("preferences", {})
+
+    categories = st.text_area(
+        "Preferred Categories (one per line)",
+        value="\n".join(preferences.get("categories", [])),
+        height=100,
+        key="pref_cats"
+    )
+    req_skills = st.text_area(
+        "Required Skills (one per line)",
+        value="\n".join(preferences.get("required_skills", [])),
+        height=100,
+        key="pref_req"
+    )
+    nice_skills = st.text_area(
+        "Nice-to-Have Skills (one per line)",
+        value="\n".join(preferences.get("nice_to_have_skills", [])),
+        height=100,
+        key="pref_nice"
+    )
+
+    budget = preferences.get("budget", {})
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        fixed_min = st.number_input("Fixed Min ($)", min_value=0, value=budget.get("fixed_min", 500), key="pref_fmin")
+    with col2:
+        fixed_max = st.number_input("Fixed Max ($)", min_value=0, value=budget.get("fixed_max", 10000), key="pref_fmax")
+    with col3:
+        hourly_min = st.number_input("Hourly Min ($)", min_value=0, value=budget.get("hourly_min", 25), key="pref_hmin")
+
+    threshold = st.slider("Match Threshold", 0, 100, value=preferences.get("threshold", 50), key="pref_thresh")
+
+    exclusions = st.text_area(
+        "Exclusion Keywords (one per line)",
+        value="\n".join(preferences.get("exclusion_keywords", [])),
+        height=100,
+        key="pref_excl"
+    )
+
+    if st.button("Save Job Preferences", key="save_prefs"):
+        new_prefs = {
+            "preferences": {
+                "categories": [s.strip() for s in categories.split("\n") if s.strip()],
+                "required_skills": [s.strip() for s in req_skills.split("\n") if s.strip()],
+                "nice_to_have_skills": [s.strip() for s in nice_skills.split("\n") if s.strip()],
+                "budget": {"fixed_min": fixed_min, "fixed_max": fixed_max, "hourly_min": hourly_min},
+                "client_criteria": preferences.get("client_criteria", {}),
+                "exclusion_keywords": [s.strip() for s in exclusions.split("\n") if s.strip()],
+                "threshold": threshold,
+            }
+        }
+        if save_yaml_config("job_preferences.yaml", new_prefs):
+            st.success("Job preferences saved!")
+            st.cache_data.clear()
+        else:
+            st.error("Failed to save job preferences")
+
+    st.markdown("---")
+
+    # ── Email Settings ───────────────────────────────────────────────────────
+    st.subheader("Email Settings")
+    email_cfg = load_yaml_config("email_config.yaml")
+    email_data = email_cfg.get("email", {})
+    smtp = email_data.get("smtp", {})
+    notif = email_data.get("notifications", {})
+
+    email_enabled = st.checkbox("Enable email notifications", value=email_data.get("enabled", False), key="email_on")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        smtp_host = st.text_input("SMTP Host", value=smtp.get("host", "smtp.gmail.com"), key="smtp_host")
+        smtp_user = st.text_input("SMTP Username", value=smtp.get("username", ""), key="smtp_user")
+    with col2:
+        smtp_port = st.number_input("SMTP Port", min_value=1, value=smtp.get("port", 587), key="smtp_port")
+        recipient = st.text_input("Recipient Email", value=notif.get("recipient", ""), key="smtp_recip")
+
+    min_proposals = st.number_input("Min proposals to send email", min_value=0,
+                                    value=notif.get("min_proposals_to_send", 1), key="email_min")
+
+    if st.button("Save Email Settings", key="save_email"):
+        new_email = {
+            "email": {
+                "enabled": email_enabled,
+                "smtp": {
+                    "host": smtp_host,
+                    "port": smtp_port,
+                    "username": smtp_user,
+                },
+                "notifications": {
+                    "recipient": recipient,
+                    "send_immediately": notif.get("send_immediately", True),
+                    "min_proposals_to_send": min_proposals,
+                    "max_proposals_per_email": notif.get("max_proposals_per_email", 10),
+                },
+            }
+        }
+        if save_yaml_config("email_config.yaml", new_email):
+            st.success("Email settings saved!")
+        else:
+            st.error("Failed to save email settings")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -883,21 +1864,39 @@ def main():
 
     # Main tabs
     fav_count = get_favorite_count()
-    tab_label = f"⭐ Favorites ({fav_count})" if fav_count > 0 else "⭐ Favorites"
+    fav_label = f"⭐ Favorites ({fav_count})" if fav_count > 0 else "⭐ Favorites"
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Jobs", tab_label, "📊 Analytics", "⚙️ Settings"])
+    # Count pending proposals
+    proposals = get_proposals()
+    pending_proposals = len([p for p in proposals if p['status'] == 'pending_review'])
+    proposals_label = f"✍️ Proposals ({pending_proposals})" if pending_proposals > 0 else "✍️ Proposals"
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📋 Jobs",
+        proposals_label,
+        fav_label,
+        "📊 Analytics",
+        "Scraping & AI",
+        "Profile & Proposals"
+    ])
 
     with tab1:
         render_jobs_tab(df, filters)
 
     with tab2:
-        render_favorites_tab()
+        render_proposals_tab()
 
     with tab3:
-        render_analytics_tab(df)
+        render_favorites_tab()
 
     with tab4:
-        render_settings_tab()
+        render_analytics_tab(df)
+
+    with tab5:
+        render_scraping_ai_tab()
+
+    with tab6:
+        render_profile_proposals_tab()
 
     # Footer
     st.markdown("---")

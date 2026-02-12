@@ -105,35 +105,139 @@ async def get_page(browser: Browser) -> Page:
 
 async def warmup_cloudflare(page: Page):
     """Navigate to Upwork once so Cloudflare tokens get cached in the profile."""
-    print("Warming up browser (Cloudflare pass)...")
+    print("Warming up browser (Cloudflare pass)...", flush=True)
+
+    # Overall timeout for the entire warmup process
+    warmup_timeout = 90  # 90 seconds total
+    start_time = time.time()
+
+    def time_remaining():
+        elapsed = time.time() - start_time
+        return max(0, warmup_timeout - elapsed)
+
+    # Step 1: Navigate to Upwork
     try:
-        await page.goto("https://www.upwork.com/nx/search/jobs/?q=test&per_page=10", wait_until="domcontentloaded")
-    except Exception:
-        pass
+        if page.is_closed():
+            raise RuntimeError("Page is closed before navigation")
 
-    # Wait for Cloudflare to resolve — user may need to click if Turnstile appears
-    for attempt in range(6):
+        log.info("Navigating to Upwork search page for warmup")
+        await page.goto("https://www.upwork.com/nx/search/jobs/?q=test&per_page=10",
+                       wait_until="domcontentloaded", timeout=30000)
+        log.info("Navigation completed")
+
+    except Exception as e:
+        log.error(f"Navigation failed: {e}")
+        print(f"  ❌ Navigation failed: {e}", flush=True)
+
+        # Check if page closed
+        if page.is_closed():
+            raise RuntimeError(
+                "Browser/page was closed during navigation. "
+                "This may happen if Chrome crashes or Cloudflare blocks the connection. "
+                "Try running again or manually open Chrome with: "
+                "'Google Chrome' --remote-debugging-port=9222"
+            )
+
+        # Check current URL
         try:
-            await page.wait_for_selector('article[data-test="JobTile"]', timeout=8000)
-            print("✓ Cloudflare passed — browser is ready.\n")
-            return True
+            current_url = page.url
+            log.info(f"Current URL after failed navigation: {current_url}")
+            if current_url == "about:blank" or not current_url.startswith("http"):
+                raise RuntimeError(f"Navigation failed and page is at: {current_url}")
         except Exception:
-            title = await page.title()
-            if attempt == 0:
-                print("  Cloudflare challenge detected. If a checkbox appears in the browser, click it.")
-            print(f"  Waiting... ({attempt+1}/6) — page title: '{title[:40]}'")
-            await asyncio.sleep(5)
+            pass
 
-    # Final check
-    title = await page.title()
-    if "search" in title.lower() or "upwork" in title.lower():
-        print("✓ Browser appears ready.\n")
-        return True
+        raise RuntimeError(f"Navigation failed: {e}")
 
-    print("⚠ Could not pass Cloudflare automatically.")
-    print("  The browser window is open — please solve the challenge manually,")
-    print("  then press Enter here to continue...")
+    # Step 2: Wait for Cloudflare to resolve
+    log.info("Waiting for Cloudflare verification to complete")
+    max_attempts = 10
+
+    for attempt in range(max_attempts):
+        # Check timeout
+        if time_remaining() <= 0:
+            log.error("Warmup timeout exceeded")
+            raise RuntimeError(f"Cloudflare warmup timed out after {warmup_timeout}s")
+
+        try:
+            # Check if page is still valid
+            if page.is_closed():
+                log.error("Page closed during warmup")
+                raise RuntimeError("Browser/page was closed during Cloudflare challenge")
+
+            # Try to find job tiles (indicates Cloudflare passed)
+            await page.wait_for_selector('article[data-test="JobTile"]', timeout=8000)
+            log.info("Cloudflare verification passed successfully")
+            print("✓ Cloudflare passed — browser is ready.\n", flush=True)
+            return True
+
+        except asyncio.TimeoutError:
+            # Selector not found yet, check page state
+            if page.is_closed():
+                log.error("Page closed while waiting for selector")
+                raise RuntimeError("Browser/page was closed during Cloudflare challenge")
+
+            # Get page info for debugging
+            try:
+                title = await page.title()
+                url = page.url
+                log.info(f"Attempt {attempt+1}/{max_attempts}: title='{title[:50]}', url={url}")
+
+                if attempt == 0:
+                    print("  Cloudflare challenge detected. If a checkbox appears in the browser, click it.", flush=True)
+
+                # Check for common Cloudflare indicators
+                if "just a moment" in title.lower() or "cloudflare" in title.lower():
+                    print(f"  ⏳ Waiting for Cloudflare... ({attempt+1}/{max_attempts})", flush=True)
+                elif "access denied" in title.lower() or "blocked" in title.lower():
+                    log.error(f"Access denied or blocked: {title}")
+                    raise RuntimeError(f"Upwork blocked access: {title}")
+                else:
+                    print(f"  ⏳ Waiting for page to load... ({attempt+1}/{max_attempts}) — { title[:40]}", flush=True)
+
+            except Exception as e:
+                log.warning(f"Could not get page info: {e}")
+                print(f"  ⏳ Waiting... ({attempt+1}/{max_attempts})", flush=True)
+
+            # Wait before retry
+            wait_time = min(5, time_remaining())
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            else:
+                break
+
+        except Exception as e:
+            log.error(f"Unexpected error during warmup: {e}")
+            if page.is_closed():
+                raise RuntimeError("Browser/page was closed unexpectedly")
+            raise
+
+    # Final check after all attempts
+    log.info("Max attempts reached, doing final verification")
+    try:
+        if page.is_closed():
+            raise RuntimeError("Browser/page was closed")
+
+        title = await page.title()
+        url = page.url
+        log.info(f"Final check: title='{title}', url={url}")
+
+        # If we're on Upwork and not on an error page, consider it success
+        if "upwork.com" in url and "search" in url.lower():
+            print("✓ Browser appears ready (no job tiles found but on search page).\n", flush=True)
+            log.warning("Warmup completed but job tiles not detected")
+            return True
+
+    except Exception as e:
+        log.error(f"Final check failed: {e}")
+
+    # Manual intervention fallback
+    print("⚠ Could not pass Cloudflare automatically.", flush=True)
+    print("  The browser window is open — please solve the challenge manually,", flush=True)
+    print("  then press Enter here to continue...", flush=True)
+    log.info("Waiting for manual Cloudflare resolution")
     await asyncio.get_event_loop().run_in_executor(None, input)
+    log.info("Manual intervention completed, proceeding")
     return True
 
 

@@ -1,0 +1,32 @@
+preferences:
+  categories:
+    - "RAG / Document AI"
+    - "AI Agent / Multi-Agent System"
+    - "AI Chatbot / Virtual Assistant"
+
+  required_skills:
+    - "Python"
+    - "LangChain"
+
+  nice_to_have_skills:
+    - "Pinecone"
+    - "OpenAI API"
+    - "FastAPI"
+
+  budget:
+    fixed_min: 1000
+    fixed_max: 10000
+    hourly_min: 40
+
+  client_criteria:
+    payment_verified: true
+    min_total_spent: 10000
+    min_rating: 4.5
+
+  exclusions:
+    keywords:
+      - "data entry"
+      - "copy paste"
+      - "virtual assistant only"
+
+  match_threshold: 65  # Adjusted to match fixture job scores (65.0, 64.9)

@@ -1,0 +1,9 @@
+projects:
+  - title: "RAG Chatbot"
+    description: "Built RAG system using LangChain + Pinecone"
+    technologies:
+      - "Python"
+      - "LangChain"
+      - "Pinecone"
+    outcomes: "Reduced support tickets by 40%"
+    url: null

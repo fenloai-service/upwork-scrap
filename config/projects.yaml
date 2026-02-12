@@ -1,0 +1,78 @@
+projects:
+  - title: "RAG-based Customer Support Chatbot"
+    description: |
+      Built production RAG system using LangChain + Pinecone for automated customer support.
+      Integrated with company knowledge base (1000+ documents) and handled 500+ queries/day.
+      Implemented semantic search with OpenAI embeddings and GPT-4 for response generation.
+    technologies:
+      - "Python"
+      - "LangChain"
+      - "Pinecone"
+      - "OpenAI"
+      - "FastAPI"
+      - "React"
+    outcomes: |
+      Reduced support tickets by 40%, achieved 95% accuracy rate, saved company $50K/year in support costs.
+    url: "https://github.com/yourname/rag-chatbot"
+
+  - title: "Multi-Agent AI Research Assistant"
+    description: |
+      Developed multi-agent system using LangGraph for automated research and content generation.
+      Implemented coordinator agent + 3 specialist agents (research, summarization, validation).
+      Built web interface with real-time streaming and agent status updates.
+    technologies:
+      - "LangGraph"
+      - "CrewAI"
+      - "Python"
+      - "React"
+      - "WebSockets"
+    outcomes: |
+      Automated 80% of research workflows, reduced research time from 4 hours to 30 minutes per report.
+    url: null
+
+  - title: "AI-Powered Document Analysis Platform"
+    description: |
+      Built SaaS platform for extracting structured data from PDFs and images using GPT-4 Vision.
+      Implemented batch processing, custom prompt templates, and webhook notifications.
+      Handled 10K+ documents/month with 98% accuracy.
+    technologies:
+      - "Python"
+      - "GPT-4 Vision"
+      - "FastAPI"
+      - "PostgreSQL"
+      - "AWS S3"
+      - "Next.js"
+    outcomes: |
+      Generated $15K MRR within 3 months, 50+ paying customers, 4.9/5 rating.
+    url: "https://example.com"
+
+  - title: "Fine-tuned LLM for Legal Document Classification"
+    description: |
+      Fine-tuned GPT-3.5 on 5000+ legal documents for automated classification.
+      Built data annotation pipeline with active learning to minimize labeling costs.
+      Deployed with FastAPI + Redis caching for <500ms response time.
+    technologies:
+      - "OpenAI Fine-tuning"
+      - "Python"
+      - "FastAPI"
+      - "Redis"
+      - "PostgreSQL"
+    outcomes: |
+      Improved classification accuracy from 70% to 94%, processed 50K documents in production.
+    url: null
+
+  - title: "Real-time AI Chatbot with Voice Integration"
+    description: |
+      Built voice-enabled chatbot using Whisper (speech-to-text) and ElevenLabs (text-to-speech).
+      Implemented conversation memory with LangChain and vector-based context retrieval.
+      Deployed on AWS with auto-scaling for 1000+ concurrent users.
+    technologies:
+      - "LangChain"
+      - "OpenAI Whisper"
+      - "ElevenLabs"
+      - "WebSockets"
+      - "AWS"
+      - "React"
+    outcomes: |
+      Handled 10K+ voice conversations, 92% user satisfaction, <2s average response time.
+    url: "https://github.com/yourname/voice-chatbot"

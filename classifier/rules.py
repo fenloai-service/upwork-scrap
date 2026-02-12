@@ -1,11 +1,15 @@
 """Classify Upwork jobs into work-type categories based on title + description + skills."""
 
 import re
-import sqlite3
 import json
 from collections import Counter
 
 import config
+from database.db import (
+    get_all_jobs_for_classification,
+    update_job_categories_batch,
+    init_db,
+)
 
 
 # ── Categories ────────────────────────────────────────────────────────────────
@@ -387,22 +391,15 @@ def _score(scores, category, title, desc, skills_text, rules):
 
 def classify_all_jobs():
     """Classify all jobs in the database and update the category column."""
-    conn = sqlite3.connect(config.DB_PATH)
-    conn.row_factory = sqlite3.Row
+    # Ensure schema is up to date (columns exist)
+    init_db()
 
-    # Add category column if not exists
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()]
-    if "category" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN category TEXT DEFAULT ''")
-    if "category_confidence" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN category_confidence REAL DEFAULT 0")
-    conn.commit()
-
-    rows = conn.execute("SELECT uid, title, description, skills FROM jobs").fetchall()
+    rows = get_all_jobs_for_classification()
     print(f"Classifying {len(rows)} jobs...")
 
     category_counts = Counter()
     low_confidence = 0
+    updates = []
 
     for row in rows:
         skills = []
@@ -415,17 +412,14 @@ def classify_all_jobs():
         cat_key, confidence = classify_job(row["title"], row["description"], skills)
         category_label = CATEGORIES.get(cat_key, "Other")
 
-        conn.execute(
-            "UPDATE jobs SET category = ?, category_confidence = ? WHERE uid = ?",
-            (category_label, confidence, row["uid"]),
-        )
+        updates.append((category_label, confidence, row["uid"]))
 
         category_counts[category_label] += 1
         if confidence < 0.5:
             low_confidence += 1
 
-    conn.commit()
-    conn.close()
+    # Batch update all classifications
+    update_job_categories_batch(updates)
 
     print(f"\nClassification complete!")
     print(f"Low confidence (<50%): {low_confidence} jobs\n")

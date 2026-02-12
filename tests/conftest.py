@@ -1,10 +1,24 @@
 """Shared test fixtures for the upwork-scrap test suite."""
 
+import sys
+from unittest.mock import MagicMock
+
+# Mock playwright before any test imports it
+# This allows tests to run without having playwright installed
+sys.modules['playwright'] = MagicMock()
+sys.modules['playwright.async_api'] = MagicMock()
+
 import sqlite3
 import tempfile
 import os
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def ensure_sqlite_backend(monkeypatch):
+    """Ensure tests always use SQLite backend by clearing DATABASE_URL."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
 
 @pytest.fixture

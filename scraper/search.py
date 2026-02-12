@@ -215,11 +215,14 @@ async def scrape_search_page(page: Page, keyword: str, page_num: int) -> dict:
     return result
 
 
-async def scrape_keyword(page: Page, keyword: str, max_pages: int = None, start_page: int = 1, save_fn=None) -> list:
+async def scrape_keyword(page: Page, keyword: str, max_pages: int = None, start_page: int = 1,
+                         save_fn=None, known_uids: set = None) -> list:
     """Scrape all pages for a given keyword. Returns list of job dicts.
 
     Args:
         save_fn: Optional callback(jobs_list) called after each page to persist data incrementally.
+        known_uids: Optional set of UIDs already in DB. If provided, jobs with these UIDs
+                    are filtered out. Enables early termination when a page yields 0 new jobs.
     """
     all_jobs = []
     page_num = start_page
@@ -242,18 +245,38 @@ async def scrape_keyword(page: Page, keyword: str, max_pages: int = None, start_
             print(f"  ✗ Error on page {page_num}, stopping keyword.")
             break
 
+        # Filter out duplicate UIDs if known_uids is provided
+        skipped = 0
+        if known_uids is not None and jobs:
+            original_count = len(jobs)
+            jobs = [j for j in jobs if j.get("uid") and j["uid"] not in known_uids]
+            skipped = original_count - len(jobs)
+            # Add new UIDs to prevent intra-session duplicates
+            known_uids.update(j["uid"] for j in jobs if j.get("uid"))
+
         all_jobs.extend(jobs)
         pages_scraped += 1
 
         # Save to DB incrementally after each page
         if save_fn and jobs:
             inserted, updated = save_fn(jobs)
-            print(f"  ✓ Got {len(jobs)} jobs (total: {len(all_jobs)}, max page: {max_page}) — DB: +{inserted} new, {updated} dup")
+            skip_msg = f", {skipped} skipped" if skipped > 0 else ""
+            print(f"  ✓ Got {len(jobs)} new jobs{skip_msg} (total: {len(all_jobs)}, max page: {max_page}) — DB: +{inserted} new, {updated} dup")
         else:
-            print(f"  ✓ Got {len(jobs)} jobs (total: {len(all_jobs)}, max page: {max_page})")
+            skip_msg = f", {skipped} skipped" if skipped > 0 else ""
+            print(f"  ✓ Got {len(jobs)} new jobs{skip_msg} (total: {len(all_jobs)}, max page: {max_page})")
+
+        # Early termination: stop when duplicate ratio exceeds threshold
+        if known_uids is not None and skipped > 0 and config.DUPLICATE_EARLY_TERMINATION:
+            total_on_page = len(jobs) + skipped
+            dup_ratio = skipped / total_on_page
+            if dup_ratio > config.DUPLICATE_RATIO_THRESHOLD:
+                print(f"  ℹ {skipped}/{total_on_page} jobs ({dup_ratio:.0%}) already known "
+                      f"(threshold: {config.DUPLICATE_RATIO_THRESHOLD:.0%}), stopping keyword early")
+                break
 
         # Stop if we got fewer jobs than expected (last page)
-        if len(jobs) < 10:
+        if len(jobs) < 10 and skipped == 0:
             print(f"  ℹ Last page reached (only {len(jobs)} jobs)")
             break
 

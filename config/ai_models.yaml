@@ -1,0 +1,32 @@
+ai_models:
+  classification:
+    provider: ollama_local
+    model: qwen2.5:7b-instruct
+    fallback:
+    - provider: groq
+      model: llama-3.3-70b-versatile
+  proposal_generation:
+    provider: ollama_local
+    model: qwen2.5:7b-instruct
+    fallback:
+    - provider: groq
+      model: llama-3.3-70b-versatile
+  providers:
+    ollama_local:
+      name: Ollama (Remote via SSH tunnel)
+      base_url: http://localhost:11434/v1
+      api_key: ollama
+      api_key_env: null
+      models:
+      - qwen2.5:7b-instruct
+      - gemma2:9b
+      - mistral:7b-instruct-q4_0
+    groq:
+      name: Groq Cloud
+      base_url: https://api.groq.com/openai/v1
+      api_key: null
+      api_key_env: GROQ_API_KEY
+      models:
+      - llama-3.3-70b-versatile
+      - llama-3.1-8b-instant
+      - mixtral-8x7b-32768

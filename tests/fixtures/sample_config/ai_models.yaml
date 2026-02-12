@@ -1,0 +1,27 @@
+ai_models:
+  classification:
+    provider: ollama_local
+    model: llama3:8b
+
+  proposal_generation:
+    provider: ollama_local
+    model: llama3:8b
+
+  providers:
+    ollama_local:
+      name: Ollama (Local)
+      base_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      api_key_env: null
+      models:
+        - llama3:8b
+        - mistral:7b
+
+    groq:
+      name: Groq Cloud
+      base_url: "https://api.groq.com/openai/v1"
+      api_key: null
+      api_key_env: GROQ_API_KEY
+      models:
+        - llama-3.3-70b-versatile
+        - llama-3.1-8b-instant

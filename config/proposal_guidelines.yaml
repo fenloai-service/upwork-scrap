@@ -1,0 +1,23 @@
+guidelines:
+  tone: professional
+  max_length: 300
+  required_sections:
+  - greeting
+  - relevant_experience
+  - approach
+  - call_to_action
+  avoid_phrases:
+  - I am very interested
+  - Please consider me
+  - I am the best
+  - I am excited about this opportunity
+  - I would love to work with you
+  - Looking forward to hearing from you
+  emphasis:
+  - Reference specific job requirements
+  - Cite relevant portfolio projects
+  - Be concise and specific
+  - Show understanding of the problem
+  - Propose concrete next steps
+  - Use active voice and strong verbs
+  max_daily_proposals: 20

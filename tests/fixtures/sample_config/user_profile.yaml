@@ -1,0 +1,17 @@
+profile:
+  name: "Test Developer"
+  bio: |
+    Full-stack AI developer with 5 years experience in RAG systems and chatbots.
+  years_experience: 5
+  specializations:
+    - "RAG / Document AI Systems"
+    - "AI Chatbots"
+  unique_value: |
+    I deliver production-ready AI solutions with clean code and testing.
+  rate_info:
+    hourly: 75
+    project_min: 1500
+  skills:
+    - "Python"
+    - "LangChain"
+    - "OpenAI"

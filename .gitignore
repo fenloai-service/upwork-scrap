@@ -7,3 +7,14 @@ data/
 venv/
 # .claude/ - Commented out to allow orchestration files
 # Keep .claude/orchestration.json and related files in version control
+
+# Config files with sensitive data
+config/email_config.yaml
+data/emails/
+.streamlit/secrets.toml
+
+# Local tooling / IDE
+.playwright-mcp/
+.serena/
+dashboard_error.png
+*.bak

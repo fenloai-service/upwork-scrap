@@ -2,6 +2,22 @@
 
 This directory contains the orchestration system for implementing the proposal automation workflow from `docs/WORKFLOW.md`.
 
+## 🚨 IMPORTANT: Always Use Virtual Environment
+
+**ALWAYS activate the virtual environment before running any commands:**
+
+```bash
+source .venv/bin/activate
+```
+
+Verify you're in the venv:
+```bash
+which python
+# Should show: /Users/mohammadshoaib/Codes/upwork-scrap/.venv/bin/python
+```
+
+If you get `ModuleNotFoundError: No module named 'playwright'` or similar, you forgot to activate the venv!
+
 ## Files
 
 - **`orchestration.json`** - Structured task list with 3 phases, 16 steps, tracking status and verification

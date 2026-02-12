@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🎯 Active Development Status
+
+**IMPORTANT**: When the user says "continue implementation" or invokes `/sc:implement`, ALWAYS check `.claude/orchestration.json` FIRST.
+
+- **Orchestration File**: `.claude/orchestration.json` - Authoritative status tracker for all implementation phases and steps
+- **Source Document**: `docs/WORKFLOW.md` - Original implementation plan (reference only)
+- **Execution Status**: `.claude/orchestration.json` tracks which steps are "completed", "pending", or "blocked"
+
+**Process**:
+1. Read `.claude/orchestration.json` to find current phase and next pending step
+2. If at a gate (e.g., "phase_1_gate"), verify all gate requirements pass before proceeding
+3. Implement the next pending step according to its specification
+4. Update `.claude/orchestration.json` to mark step as "completed" (use `.claude/orchestration_manager.py` if available)
+5. Continue to next step or ask user for confirmation
+
 ## Project Overview
 
 Upwork job scraper and analyzer for AI-related freelance jobs. Scrapes public Upwork search results (no login) using a real Chrome browser via CDP to bypass Cloudflare, stores data in SQLite with Grok AI-powered classification, and displays results in a live Streamlit dashboard with real-time filtering.
@@ -47,7 +62,7 @@ make test              # Run tests
 
 ## Architecture
 
-**Data flow**: `main.py` CLI → `scraper/browser.py` (Chrome CDP on port 9222, Cloudflare warmup) → `scraper/search.py` (JS DOM extraction) → `database/db.py` (SQLite upsert) → `classifier/ai.py` (Grok API) → `dashboard/app.py` (Streamlit + Plotly live UI).
+**Data flow**: `main.py` CLI → `scraper/browser.py` (Chrome CDP on port 9222, Cloudflare warmup) → `scraper/search.py` (JS DOM extraction) → `database/db.py` (SQLite or PostgreSQL upsert) → `classifier/ai.py` (Grok API) → `dashboard/app.py` (Streamlit + Plotly live UI).
 
 **Project structure**:
 ```
@@ -57,7 +72,8 @@ scraper/
   browser.py            # Chrome CDP connection, Cloudflare warmup, human-like delays
   search.py             # Search page scraping, JS extraction
 database/
-  db.py                 # SQLite init, upsert, queries
+  adapter.py            # DB abstraction layer (SQLite vs PostgreSQL)
+  db.py                 # DB init, upsert, queries (uses adapter)
 classifier/
   rules.py              # Rule-based classification (keyword matching)
   ai.py                 # AI classification (Grok/xAI API)
@@ -79,6 +95,19 @@ docs/                   # PRD, workflow documentation
 - **JS-based extraction** — `EXTRACT_JOBS_JS` in `scraper/search.py` runs in-browser JavaScript using `data-test` attribute selectors (e.g., `article[data-test="JobTile"]`, `[data-test="TokenClamp JobAttrs"]`).
 - **Two-stage classification** — optional rule-based classification (`classifier/rules.py`) for quick categorization, followed by AI-powered classification (`classifier/ai.py` using Grok AI) that adds structured categories, key tools, and single-sentence summaries. Batch processing with 20 jobs per API call.
 - **Live Streamlit dashboard** — real-time web interface with auto-refresh (5-min TTL), instant filtering, no HTML regeneration needed. Runs on localhost:8501.
+- **Hybrid database architecture** — SQLite by default for local use; PostgreSQL (Neon) when `DATABASE_URL` env var is set. `database/adapter.py` provides a uniform connection interface that auto-converts `?` placeholders to `%s` for PostgreSQL and wraps psycopg2 connections in an SQLite-like API. No code changes needed outside the adapter layer.
+
+## Database Architecture
+
+**Hybrid SQLite / PostgreSQL support**:
+- **Default (local)**: SQLite at `data/jobs.db` — no configuration needed
+- **Cloud (opt-in)**: Set `DATABASE_URL` env var to a PostgreSQL connection string (e.g., Neon)
+- **Adapter**: `database/adapter.py` handles all backend differences (placeholders, DDL, connection wrapping)
+- **Migration**: `scripts/migrate_to_postgres.py` copies all data from local SQLite → PostgreSQL
+- **Dashboard**: `dashboard/app.py` reads `DATABASE_URL` from Streamlit secrets for cloud deployment
+- **API usage tracking**: `api_usage_tracker.py` always uses local SQLite (`data/api_usage.db`) — not migrated
+
+**Cloud deployment flow**: Local scraping → `migrate_to_postgres.py` → Neon PostgreSQL ← Streamlit Cloud dashboard
 
 ## Database Schema
 

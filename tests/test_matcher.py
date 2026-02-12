@@ -164,7 +164,7 @@ def test_get_matching_jobs_filters_below_threshold(sample_preferences, perfect_j
     uids = [j["uid"] for j in matched]
     assert "~test001" in uids, "Perfect match job should pass threshold"
     for j in matched:
-        assert j["_match_score"] >= 70, f"Job {j['uid']} scored {j['_match_score']} but threshold is 70"
+        assert j["match_score"] >= 70, f"Job {j['uid']} scored {j['match_score']} but threshold is 70"
 
 
 def test_score_formula_max_is_100(sample_preferences, perfect_job):
@@ -182,3 +182,78 @@ def test_hourly_job_scores_correctly(sample_preferences, hourly_job):
     score, reasons = score_job(hourly_job, sample_preferences["preferences"])
     assert score > 0, "Hourly job matching preferences should score > 0"
     assert score >= 70, f"Good hourly match scored {score}, expected >= 70"
+
+
+def test_client_quality_null_rating_redistributes_weight():
+    """Client with no rating should redistribute weight (not crash)."""
+    from matcher import score_job
+
+    prefs = {
+        "categories": ["AI Chatbot / Virtual Assistant"],
+        "required_skills": ["Python"],
+        "nice_to_have_skills": [],
+        "budget": {"fixed_min": 1000, "fixed_max": 10000, "hourly_min": 40},
+        "client_criteria": {"payment_verified": True, "min_total_spent": 5000, "min_rating": 4.5},
+        "exclusions": {"keywords": []},
+        "match_threshold": 70
+    }
+
+    job = {
+        "uid": "~test006",
+        "title": "Build AI Chatbot",
+        "description": "Need a chatbot developer.",
+        "categories": '["AI Chatbot / Virtual Assistant"]',
+        "key_tools": '["Python", "OpenAI"]',
+        "skills": '["Python", "OpenAI API"]',
+        "job_type": "Fixed",
+        "fixed_price": 2000.0,
+        "client_total_spent": "$20K+ spent",
+        "client_rating": None,  # No rating yet
+        "client_info_raw": "Payment method verified",
+    }
+
+    score, reasons = score_job(job, prefs)
+    assert isinstance(score, (int, float)), "Should return numeric score"
+    assert 0 <= score <= 100, f"Score {score} out of valid range"
+
+    # Find client_quality reason
+    client_reason = [r for r in reasons if r['criterion'] == 'client_quality'][0]
+    # Should mention either payment verification or spending (without crashing on null rating)
+    assert 'verified' in client_reason['detail'].lower() or 'spent' in client_reason['detail'].lower()
+
+
+def test_client_quality_new_client():
+    """New client (no spending + no rating) should still score based on payment verification."""
+    from matcher import score_job
+
+    prefs = {
+        "categories": ["AI Chatbot / Virtual Assistant"],
+        "required_skills": ["Python"],
+        "nice_to_have_skills": [],
+        "budget": {"fixed_min": 1000, "fixed_max": 10000, "hourly_min": 40},
+        "client_criteria": {"payment_verified": True, "min_total_spent": 5000, "min_rating": 4.5},
+        "exclusions": {"keywords": []},
+        "match_threshold": 70
+    }
+
+    job = {
+        "uid": "~test007",
+        "title": "Build Chatbot (New Client)",
+        "description": "First project on Upwork.",
+        "categories": '["AI Chatbot / Virtual Assistant"]',
+        "key_tools": '["Python"]',
+        "skills": '["Python"]',
+        "job_type": "Fixed",
+        "fixed_price": 1800.0,
+        "client_total_spent": "No spending history",
+        "client_rating": "No ratings yet",
+        "client_info_raw": "Payment method verified",
+    }
+
+    score, reasons = score_job(job, prefs)
+    assert isinstance(score, (int, float)), "Should return numeric score"
+    assert 0 <= score <= 100, f"Score {score} out of valid range"
+
+    # New client with payment verified should get some credit
+    client_reason = [r for r in reasons if r['criterion'] == 'client_quality'][0]
+    assert client_reason['score'] > 0, "New client with payment verified should get some points"

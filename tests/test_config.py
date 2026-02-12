@@ -43,8 +43,8 @@ def test_all_yaml_configs_parse():
         )
 
 
-def test_missing_required_config_field_raises(tmp_path):
-    """Preferences without 'match_threshold' should raise ValueError with helpful message."""
+def test_missing_required_config_field_raises(tmp_path, monkeypatch):
+    """Preferences without 'match_threshold' should raise KeyError with helpful message."""
     import yaml
 
     # Write a preferences file missing match_threshold
@@ -52,19 +52,73 @@ def test_missing_required_config_field_raises(tmp_path):
         "preferences": {
             "categories": ["RAG / Document AI"],
             "required_skills": ["Python"],
+            "nice_to_have_skills": [],
+            "budget": {"fixed_min": 1000, "fixed_max": 10000, "hourly_min": 40},
+            "client_criteria": {"payment_verified": True},
+            "exclusions": {"keywords": []},
             # match_threshold intentionally missing
         }
     }
-    prefs_path = tmp_path / "job_preferences.yaml"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    prefs_path = config_dir / "job_preferences.yaml"
     with open(prefs_path, "w") as f:
         yaml.dump(bad_prefs, f)
 
-    # This test will be fully functional once matcher.py is created (Step 1.3).
-    # For now, we validate the concept: load_preferences should validate required keys.
+    # Patch CONFIG_DIR to use our temp path
+    import config
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+
     try:
         from matcher import load_preferences
 
-        with pytest.raises((ValueError, KeyError)):
-            load_preferences(str(prefs_path))
+        with pytest.raises(KeyError):
+            load_preferences()  # Takes no arguments, reads from CONFIG_DIR
     except ImportError:
         pytest.skip("matcher.py not yet created (Step 1.3)")
+
+
+def test_partial_config_with_missing_files():
+    """When some config files are missing, loader should raise FileNotFoundError with clear message."""
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create only some config files, not all
+        config_dir = os.path.join(tmpdir, "config")
+        os.makedirs(config_dir, exist_ok=True)
+
+        # Create only job_preferences.yaml, omit others
+        import yaml
+        prefs = {
+            "preferences": {
+                "categories": ["AI"],
+                "required_skills": ["Python"],
+                "nice_to_have_skills": [],
+                "budget": {"fixed_min": 1000, "fixed_max": 10000, "hourly_min": 40},
+                "client_criteria": {"payment_verified": True, "min_total_spent": 5000, "min_rating": 4.5},
+                "exclusions": {"keywords": []},
+                "match_threshold": 70
+            }
+        }
+        with open(os.path.join(config_dir, "job_preferences.yaml"), "w") as f:
+            yaml.dump(prefs, f)
+
+        # Try to load a missing config
+        try:
+            from proposal_generator import load_config_file
+            import config as main_config
+
+            # Temporarily override CONFIG_DIR
+            from pathlib import Path
+            original_config_dir = main_config.CONFIG_DIR
+            main_config.CONFIG_DIR = Path(tmpdir) / "config"
+
+            try:
+                with pytest.raises(FileNotFoundError):
+                    load_config_file("user_profile.yaml")  # This file doesn't exist
+            finally:
+                main_config.CONFIG_DIR = original_config_dir
+
+        except ImportError:
+            pytest.skip("proposal_generator.py not yet created (Step 1.4)")

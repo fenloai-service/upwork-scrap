@@ -1,0 +1,7 @@
+email:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  from_address: "test@example.com"
+  notification_rules:
+    min_match_score: 75
+    send_daily_summary: false
