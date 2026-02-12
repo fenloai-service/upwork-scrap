@@ -1037,6 +1037,7 @@ def render_proposals_tab(filters=None):
                     update_proposal_status(pid, 'approved')
                 st.success(f"✅ Approved {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
+                load_proposals_data.clear()
                 st.rerun()
 
         with col2:
@@ -1045,6 +1046,7 @@ def render_proposals_tab(filters=None):
                     update_proposal_status(pid, 'rejected')
                 st.success(f"Rejected {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
+                load_proposals_data.clear()
                 st.rerun()
 
         with col3:
@@ -1053,6 +1055,7 @@ def render_proposals_tab(filters=None):
                     update_proposal_status(pid, 'pending_review')
                 st.success(f"Reset {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
+                load_proposals_data.clear()
                 st.rerun()
 
         with col4:
@@ -1311,21 +1314,25 @@ def render_proposal_card(prop, read_only=False):
                 if 'approved' in allowed_statuses:
                     if st.button("✅ Approve", key=f"approve_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'approved'):
+                            load_proposals_data.clear()
                             st.rerun()
             with act2:
                 if 'rejected' in allowed_statuses:
                     if st.button("❌ Reject", key=f"reject_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'rejected'):
+                            load_proposals_data.clear()
                             st.rerun()
             with act3:
                 if 'submitted' in allowed_statuses:
                     if st.button("🚀 Submitted", key=f"submit_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'submitted'):
+                            load_proposals_data.clear()
                             st.rerun()
             with act4:
                 if 'pending_review' in allowed_statuses:
                     if st.button("🔄 Reset", key=f"reset_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'pending_review'):
+                            load_proposals_data.clear()
                             st.rerun()
             with toggle_col:
                 toggle_label = "📄 Hide Proposal" if st.session_state[show_key] else "📄 Show Proposal"
@@ -1397,6 +1404,7 @@ def render_proposal_card(prop, read_only=False):
                     if update_proposal_text(proposal_id, edited_proposal):
                         st.success("✅ Proposal saved!")
                         st.session_state[edit_key] = False
+                        load_proposals_data.clear()
                         st.rerun()
                     else:
                         st.error("❌ Failed to save proposal")
@@ -1418,6 +1426,7 @@ def render_proposal_card(prop, read_only=False):
                         label = f"{'⭐' * val}"
                         if st.button(label, key=f"rate{val}_{job_uid}", use_container_width=True):
                             update_proposal_rating(job_uid, val)
+                            load_proposals_data.clear()
                             st.rerun()
                 with r_info:
                     if current_rating:
