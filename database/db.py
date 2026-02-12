@@ -754,7 +754,8 @@ def get_proposals(status: str = None, limit: int = None) -> list[dict]:
                 j.categories as job_categories,
                 j.key_tools as job_key_tools,
                 j.ai_summary as job_ai_summary,
-                j.est_time as job_est_time
+                j.est_time as job_est_time,
+                j.posted_text as job_posted_text
             FROM proposals p
             JOIN jobs j ON p.job_uid = j.uid
         """

@@ -1122,11 +1122,11 @@ def render_proposals_tab(filters=None):
 
 
 def render_proposal_card(prop, read_only=False):
-    """Render a proposal card with job info first and proposal text on demand.
+    """Render a proposal card following the job card format, with proposal additions.
 
-    Layout: Header → AI Summary → Job Info Grid → Skills/Categories →
-            Match Reasons (collapsed) → Action Buttons + Show Proposal toggle →
-            Proposal section (toggled) → Full Description (collapsed).
+    Mirrors render_job_card layout: Header → Categories → AI Summary → Metadata →
+    Key Tools → Description expander. Then adds proposal-specific: Action buttons,
+    Show Proposal toggle, editable proposal text.
 
     Args:
         prop: Proposal data dictionary (from get_proposals JOIN)
@@ -1156,25 +1156,57 @@ def render_proposal_card(prop, read_only=False):
     }
     status_icon, border_color, status_label = status_colors.get(status, ('⚪', '#dee2e6', status))
 
-    # Job data from the expanded JOIN (no separate get_job_by_uid call needed)
+    # Job data from the expanded JOIN
     job_title = prop.get('job_title', 'Untitled Job')
     job_url = prop.get('job_url', '')
     if job_url and not job_url.startswith('http'):
         job_url = f"https://www.upwork.com{job_url}"
 
+    # Budget string (same logic as render_job_card)
+    job_type = prop.get('job_type', '')
+    hourly_min = prop.get('hourly_rate_min')
+    hourly_max = prop.get('hourly_rate_max')
+    fixed_price = prop.get('fixed_price')
+    budget_str = ""
+    if job_type == 'Fixed' and fixed_price:
+        try:
+            budget_str = f"${float(fixed_price):,.0f}"
+        except (ValueError, TypeError):
+            pass
+    elif job_type == 'Hourly' and hourly_min:
+        try:
+            budget_str = f"${float(hourly_min):.0f}/hr"
+            if hourly_max:
+                budget_str += f" - ${float(hourly_max):.0f}/hr"
+        except (ValueError, TypeError):
+            pass
+
+    # Parse categories and key_tools from JSON strings
+    job_categories_raw = prop.get('job_categories') or ''
+    job_key_tools_raw = prop.get('job_key_tools') or ''
+    try:
+        categories = json.loads(job_categories_raw) if isinstance(job_categories_raw, str) else (job_categories_raw or [])
+    except (json.JSONDecodeError, TypeError):
+        categories = []
+    try:
+        key_tools = json.loads(job_key_tools_raw) if isinstance(job_key_tools_raw, str) else (job_key_tools_raw or [])
+    except (json.JSONDecodeError, TypeError):
+        key_tools = []
+
     # ── Card container ──
     with st.container():
         st.markdown(f"""
         <div style="border-left: 4px solid {border_color}; padding: 16px;
-                    background: white; border-radius: 8px; margin-bottom: 24px;
+                    background: white; border-radius: 8px; margin-bottom: 16px;
                     box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
         """, unsafe_allow_html=True)
 
-        # ── 1. HEADER: checkbox | title | status | match score ──
+        # ── HEADER: checkbox | title | status badge | match score ──
+        # (Like job card header but with checkbox + status badge instead of bookmark)
         if read_only:
-            col_title, col_status, col_score = st.columns([5, 1.2, 0.8])
+            col_title, col_status, col_score = st.columns([4.5, 1.5, 1])
         else:
-            col_check, col_title, col_status, col_score = st.columns([0.3, 4.7, 1.2, 0.8])
+            col_check, col_title, col_status, col_score = st.columns([0.3, 4.2, 1.5, 1])
             with col_check:
                 is_selected = proposal_id in st.session_state.get('selected_proposals', set())
                 if st.checkbox("", value=is_selected, key=f"select_{job_uid}", label_visibility='collapsed'):
@@ -1190,125 +1222,58 @@ def render_proposal_card(prop, read_only=False):
             st.markdown(f"<div style='text-align: center; font-size: 18px; padding-top: 4px;'>"
                         f"{status_icon} {status_label}</div>", unsafe_allow_html=True)
         with col_score:
-            st.markdown(f"<div style='text-align: right; font-size: 22px; padding-top: 2px;'>"
-                        f"🎯 <b>{match_score:.0f}</b></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: right; font-size: 24px;'>🎯 <b>{match_score:.0f}</b></div>",
+                        unsafe_allow_html=True)
 
-        # ── 2. AI SUMMARY (prominent one-liner) ──
+        # ── CATEGORIES (blue badge pills — same as job card) ──
+        if categories:
+            category_badges = " ".join([
+                f"<span style='background: #e3f2fd; color: #1976d2; "
+                f"padding: 4px 12px; border-radius: 12px; "
+                f"font-size: 12px; margin-right: 6px;'>{cat}</span>"
+                for cat in categories[:3]
+            ])
+            st.markdown(category_badges, unsafe_allow_html=True)
+
+        # ── AI SUMMARY (italic — same as job card) ──
         ai_summary = prop.get('job_ai_summary') or ''
         if ai_summary:
-            st.markdown(f"<div style='color: #555; font-size: 15px; margin: 4px 0 12px 0;'>"
-                        f"💡 <em>{ai_summary}</em></div>", unsafe_allow_html=True)
+            st.markdown(f"*{ai_summary}*")
 
-        # ── 3. JOB INFO GRID (4 columns) ──
-        job_type = prop.get('job_type', '')
-        hourly_min = prop.get('hourly_rate_min')
-        hourly_max = prop.get('hourly_rate_max')
-        fixed_price = prop.get('fixed_price')
+        # ── METADATA LINE (same format as job card) ──
+        meta_parts = []
+        if job_type:
+            meta_parts.append(f"**{job_type}**")
+        if budget_str:
+            meta_parts.append(budget_str)
         experience = prop.get('job_experience_level') or ''
-        client_country = prop.get('client_country') or ''
-        client_spent = prop.get('job_client_total_spent') or ''
-        client_rating = prop.get('client_rating')
-        posted_date = prop.get('posted_date_estimated') or ''
+        if experience:
+            meta_parts.append(experience)
+        est_time = prop.get('job_est_time') or ''
+        if est_time:
+            meta_parts.append(est_time)
+        posted_text = prop.get('job_posted_text') or prop.get('posted_date_estimated') or ''
+        if posted_text:
+            meta_parts.append(f"Posted {posted_text}" if not str(posted_text).lower().startswith('posted') else posted_text)
         job_proposals = prop.get('job_proposals') or ''
+        if job_proposals:
+            meta_parts.append(f"📊 {job_proposals}")
 
-        # Format budget string
-        if job_type == 'Fixed' and fixed_price:
-            try:
-                budget_str = f"Fixed ${float(fixed_price):,.0f}"
-            except (ValueError, TypeError):
-                budget_str = f"Fixed {fixed_price}"
-        elif job_type == 'Hourly' and hourly_min:
-            try:
-                hr_min = float(hourly_min)
-                hr_max = float(hourly_max) if hourly_max else 0
-                budget_str = f"${hr_min:.0f}–${hr_max:.0f}/hr" if hr_max else f"${hr_min:.0f}+/hr"
-            except (ValueError, TypeError):
-                budget_str = f"Hourly"
-        elif job_type:
-            budget_str = job_type
-        else:
-            budget_str = "Not specified"
+        if meta_parts:
+            st.markdown(" • ".join(meta_parts))
 
-        # Format client info
-        client_parts = []
-        if client_country:
-            client_parts.append(client_country)
-        if client_spent:
-            client_parts.append(f"${client_spent}" if not str(client_spent).startswith('$') else str(client_spent))
-        client_info = ", ".join(client_parts) if client_parts else "—"
-        rating_str = f" · ⭐ {float(client_rating):.1f}" if client_rating else ""
+        # ── KEY TOOLS (green badge pills — same as job card) ──
+        if key_tools:
+            tool_badges = " ".join([
+                f"<span style='background: #e8f5e9; color: #1b5e20; "
+                f"padding: 5px 12px; border-radius: 8px; "
+                f"font-size: 11px; font-weight: 600; "
+                f"border: 1px solid #c5e1a5; margin-right: 6px;'>{tool}</span>"
+                for tool in key_tools[:5]
+            ])
+            st.markdown(tool_badges, unsafe_allow_html=True)
 
-        gi1, gi2, gi3, gi4 = st.columns(4)
-        with gi1:
-            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
-                        f"<div style='font-size:12px; color:#666;'>Budget</div>"
-                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>💰 {budget_str}</div>"
-                        f"</div>", unsafe_allow_html=True)
-        with gi2:
-            exp_display = experience if experience else "Not specified"
-            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
-                        f"<div style='font-size:12px; color:#666;'>Experience</div>"
-                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>🎓 {exp_display}</div>"
-                        f"</div>", unsafe_allow_html=True)
-        with gi3:
-            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
-                        f"<div style='font-size:12px; color:#666;'>Client</div>"
-                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>👤 {client_info}{rating_str}</div>"
-                        f"</div>", unsafe_allow_html=True)
-        with gi4:
-            posted_display = posted_date if posted_date else "—"
-            proposals_display = f" · 📨 {job_proposals}" if job_proposals else ""
-            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
-                        f"<div style='font-size:12px; color:#666;'>Posted</div>"
-                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>📅 {posted_display}{proposals_display}</div>"
-                        f"</div>", unsafe_allow_html=True)
-
-        # ── 4. SKILLS PILLS + CATEGORIES + KEY TOOLS ──
-        job_skills = prop.get('job_skills') or ''
-        job_categories = prop.get('job_categories') or ''
-        job_key_tools = prop.get('job_key_tools') or ''
-
-        has_tags = False
-
-        # Skills as pill tags
-        if job_skills:
-            try:
-                skills_list = json.loads(job_skills) if isinstance(job_skills, str) else job_skills
-                if skills_list:
-                    pills = " ".join(
-                        f'<span style="display:inline-block; background:#e8f0fe; color:#1967d2; '
-                        f'padding:3px 10px; border-radius:12px; font-size:13px; margin:2px 3px;">{s}</span>'
-                        for s in skills_list
-                    )
-                    st.markdown(f"<div style='margin:10px 0 4px 0;'>{pills}</div>", unsafe_allow_html=True)
-                    has_tags = True
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Categories and key tools on one line
-        cat_parts = []
-        if job_categories:
-            try:
-                cats = json.loads(job_categories) if isinstance(job_categories, str) else job_categories
-                if cats:
-                    cat_parts.append(f"**Categories:** {' · '.join(cats)}")
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if job_key_tools:
-            try:
-                tools = json.loads(job_key_tools) if isinstance(job_key_tools, str) else job_key_tools
-                if tools:
-                    cat_parts.append(f"**Key Tools:** {', '.join(tools)}")
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if cat_parts:
-            st.markdown(" &nbsp;|&nbsp; ".join(cat_parts), unsafe_allow_html=True)
-            has_tags = True
-
-        if has_tags:
-            st.markdown("")  # spacing
-
-        # ── 5. MATCH REASONS (collapsed expander) ──
+        # ── MATCH REASONS (collapsed expander) ──
         if reasons:
             with st.expander("🎯 Match Reasons"):
                 for reason in reasons[:5]:
@@ -1319,16 +1284,14 @@ def render_proposal_card(prop, read_only=False):
                     points = score * weight
                     st.markdown(f"- **{criterion}**: {score:.2f}/1.00 × {weight} = {points:.1f} pts — {detail}")
 
-        # ── 6. ACTION BUTTONS + PROPOSAL TOGGLE ──
+        # ── ACTION BUTTONS + PROPOSAL TOGGLE ──
         st.markdown("---")
 
-        # Session state for proposal visibility
         show_key = f"show_proposal_{job_uid}"
         if show_key not in st.session_state:
             st.session_state[show_key] = False
 
         if not read_only:
-            # State machine: valid transitions
             valid_transitions = {
                 'pending_review': ['approved', 'rejected'],
                 'approved': ['submitted', 'pending_review'],
@@ -1366,7 +1329,6 @@ def render_proposal_card(prop, read_only=False):
                     st.session_state[show_key] = not st.session_state[show_key]
                     st.rerun()
         else:
-            # Read-only: just show the proposal toggle
             spacer_ro, toggle_col_ro = st.columns([5, 1.5])
             with toggle_col_ro:
                 toggle_label = "📄 Hide Proposal" if st.session_state[show_key] else "📄 Show Proposal"
@@ -1374,14 +1336,13 @@ def render_proposal_card(prop, read_only=False):
                     st.session_state[show_key] = not st.session_state[show_key]
                     st.rerun()
 
-        # ── 7. PROPOSAL SECTION (toggled) ──
+        # ── PROPOSAL SECTION (toggled) ──
         if st.session_state[show_key]:
             st.markdown("---")
 
             if user_edited:
                 st.info("✏️ This proposal has been edited by you")
 
-            # Edit/Copy mode toggles
             edit_key = f"edit_mode_{job_uid}"
             copy_key = f"copy_mode_{job_uid}"
             if edit_key not in st.session_state:
@@ -1410,12 +1371,10 @@ def render_proposal_card(prop, read_only=False):
                         st.session_state[copy_key] = False
                         st.rerun()
 
-            # Copyable format
             if st.session_state[copy_key]:
                 st.info("💡 Click the copy icon in the top-right corner of the code block below")
                 st.code(proposal_text, language=None)
 
-            # Editor or read-only text
             if not read_only and st.session_state[edit_key]:
                 edited_proposal = st.text_area(
                     "Edit your proposal",
@@ -1452,7 +1411,7 @@ def render_proposal_card(prop, read_only=False):
                 r1, r2, r3, r4, r5, r_info = st.columns([1, 1, 1, 1, 1, 2])
                 for col, val in [(r1, 1), (r2, 2), (r3, 3), (r4, 4), (r5, 5)]:
                     with col:
-                        label = f"{'⭐' * val}" if current_rating == val else f"{'⭐' * val}"
+                        label = f"{'⭐' * val}"
                         if st.button(label, key=f"rate{val}_{job_uid}", use_container_width=True):
                             update_proposal_rating(job_uid, val)
                             st.rerun()
@@ -1462,11 +1421,22 @@ def render_proposal_card(prop, read_only=False):
                     else:
                         st.caption("Not rated yet")
 
-        # ── 8. FULL JOB DESCRIPTION (expander) ──
+        # ── FULL JOB DESCRIPTION (expander — same as job card) ──
         job_description = prop.get('job_description') or ''
         if job_description:
-            with st.expander("📄 Full Job Description"):
+            with st.expander("📄 View Full Description"):
                 st.markdown(job_description)
+
+                # Skills list inside description expander (same as job card)
+                job_skills_raw = prop.get('job_skills') or ''
+                if job_skills_raw:
+                    try:
+                        skills_list = json.loads(job_skills_raw) if isinstance(job_skills_raw, str) else job_skills_raw
+                        if skills_list:
+                            st.markdown("**Skills:**")
+                            st.markdown(", ".join(skills_list[:20]))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
         st.markdown("</div>", unsafe_allow_html=True)
 
