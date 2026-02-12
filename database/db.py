@@ -747,7 +747,14 @@ def get_proposals(status: str = None, limit: int = None) -> list[dict]:
                 j.client_country,
                 j.description as job_description,
                 j.skills as job_skills,
-                j.posted_date_estimated
+                j.posted_date_estimated,
+                j.experience_level as job_experience_level,
+                j.proposals as job_proposals,
+                j.client_total_spent as job_client_total_spent,
+                j.categories as job_categories,
+                j.key_tools as job_key_tools,
+                j.ai_summary as job_ai_summary,
+                j.est_time as job_est_time
             FROM proposals p
             JOIN jobs j ON p.job_uid = j.uid
         """

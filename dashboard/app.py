@@ -1037,14 +1037,18 @@ def render_proposals_tab():
 
 
 def render_proposal_card(prop, read_only=False):
-    """Render a single proposal card with job details and proposal text.
+    """Render a proposal card with job info first and proposal text on demand.
+
+    Layout: Header → AI Summary → Job Info Grid → Skills/Categories →
+            Match Reasons (collapsed) → Action Buttons + Show Proposal toggle →
+            Proposal section (toggled) → Full Description (collapsed).
 
     Args:
-        prop: Proposal data dictionary
+        prop: Proposal data dictionary (from get_proposals JOIN)
         read_only: If True, hide all editing and status change buttons
     """
     job_uid = prop['job_uid']
-    proposal_id = prop['id']  # Integer primary key — used for all DB update operations
+    proposal_id = prop['id']
     status = prop['status']
     match_score = prop.get('match_score', 0)
     proposal_text = prop.get('edited_text') or prop.get('proposal_text', '')
@@ -1067,19 +1071,13 @@ def render_proposal_card(prop, read_only=False):
     }
     status_icon, border_color, status_label = status_colors.get(status, ('⚪', '#dee2e6', status))
 
-    # Get job details (from jobs table)
-    job = get_job_by_uid(job_uid)
-
-    if not job:
-        st.error(f"❌ Job {job_uid} not found in database")
-        return
-
-    job_title = job['title']
-    job_url = job['url']
+    # Job data from the expanded JOIN (no separate get_job_by_uid call needed)
+    job_title = prop.get('job_title', 'Untitled Job')
+    job_url = prop.get('job_url', '')
     if job_url and not job_url.startswith('http'):
         job_url = f"https://www.upwork.com{job_url}"
 
-    # Card container
+    # ── Card container ──
     with st.container():
         st.markdown(f"""
         <div style="border-left: 4px solid {border_color}; padding: 16px;
@@ -1087,13 +1085,12 @@ def render_proposal_card(prop, read_only=False):
                     box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
         """, unsafe_allow_html=True)
 
-        # Header with selection checkbox (only if not read-only)
+        # ── 1. HEADER: checkbox | title | status | match score ──
         if read_only:
-            col2, col3, col4 = st.columns([5, 1, 1])
+            col_title, col_status, col_score = st.columns([5, 1.2, 0.8])
         else:
-            col1, col2, col3, col4 = st.columns([0.3, 4.7, 1, 1])
-            with col1:
-                # Bulk selection checkbox (stores proposal_id for DB operations)
+            col_check, col_title, col_status, col_score = st.columns([0.3, 4.7, 1.2, 0.8])
+            with col_check:
                 is_selected = proposal_id in st.session_state.get('selected_proposals', set())
                 if st.checkbox("", value=is_selected, key=f"select_{job_uid}", label_visibility='collapsed'):
                     if 'selected_proposals' not in st.session_state:
@@ -1102,231 +1099,289 @@ def render_proposal_card(prop, read_only=False):
                 else:
                     if 'selected_proposals' in st.session_state and proposal_id in st.session_state.selected_proposals:
                         st.session_state.selected_proposals.discard(proposal_id)
-        with col2:
+        with col_title:
             st.markdown(f"### [{job_title}]({job_url})")
-        with col3:
-            st.markdown(f"<div style='text-align: center; font-size: 20px;'>{status_icon} {status_label}</div>",
-                       unsafe_allow_html=True)
-        with col4:
-            st.markdown(f"<div style='text-align: right; font-size: 24px;'>🎯 <b>{match_score:.0f}</b></div>",
-                       unsafe_allow_html=True)
+        with col_status:
+            st.markdown(f"<div style='text-align: center; font-size: 18px; padding-top: 4px;'>"
+                        f"{status_icon} {status_label}</div>", unsafe_allow_html=True)
+        with col_score:
+            st.markdown(f"<div style='text-align: right; font-size: 22px; padding-top: 2px;'>"
+                        f"🎯 <b>{match_score:.0f}</b></div>", unsafe_allow_html=True)
 
-        # Match reasons
+        # ── 2. AI SUMMARY (prominent one-liner) ──
+        ai_summary = prop.get('job_ai_summary') or ''
+        if ai_summary:
+            st.markdown(f"<div style='color: #555; font-size: 15px; margin: 4px 0 12px 0;'>"
+                        f"💡 <em>{ai_summary}</em></div>", unsafe_allow_html=True)
+
+        # ── 3. JOB INFO GRID (4 columns) ──
+        job_type = prop.get('job_type', '')
+        hourly_min = prop.get('hourly_rate_min')
+        hourly_max = prop.get('hourly_rate_max')
+        fixed_price = prop.get('fixed_price')
+        experience = prop.get('job_experience_level') or ''
+        client_country = prop.get('client_country') or ''
+        client_spent = prop.get('job_client_total_spent') or ''
+        client_rating = prop.get('client_rating')
+        posted_date = prop.get('posted_date_estimated') or ''
+        job_proposals = prop.get('job_proposals') or ''
+
+        # Format budget string
+        if job_type == 'Fixed' and fixed_price:
+            try:
+                budget_str = f"Fixed ${float(fixed_price):,.0f}"
+            except (ValueError, TypeError):
+                budget_str = f"Fixed {fixed_price}"
+        elif job_type == 'Hourly' and hourly_min:
+            try:
+                hr_min = float(hourly_min)
+                hr_max = float(hourly_max) if hourly_max else 0
+                budget_str = f"${hr_min:.0f}–${hr_max:.0f}/hr" if hr_max else f"${hr_min:.0f}+/hr"
+            except (ValueError, TypeError):
+                budget_str = f"Hourly"
+        elif job_type:
+            budget_str = job_type
+        else:
+            budget_str = "Not specified"
+
+        # Format client info
+        client_parts = []
+        if client_country:
+            client_parts.append(client_country)
+        if client_spent:
+            client_parts.append(f"${client_spent}" if not str(client_spent).startswith('$') else str(client_spent))
+        client_info = ", ".join(client_parts) if client_parts else "—"
+        rating_str = f" · ⭐ {float(client_rating):.1f}" if client_rating else ""
+
+        gi1, gi2, gi3, gi4 = st.columns(4)
+        with gi1:
+            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
+                        f"<div style='font-size:12px; color:#666;'>Budget</div>"
+                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>💰 {budget_str}</div>"
+                        f"</div>", unsafe_allow_html=True)
+        with gi2:
+            exp_display = experience if experience else "Not specified"
+            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
+                        f"<div style='font-size:12px; color:#666;'>Experience</div>"
+                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>🎓 {exp_display}</div>"
+                        f"</div>", unsafe_allow_html=True)
+        with gi3:
+            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
+                        f"<div style='font-size:12px; color:#666;'>Client</div>"
+                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>👤 {client_info}{rating_str}</div>"
+                        f"</div>", unsafe_allow_html=True)
+        with gi4:
+            posted_display = posted_date if posted_date else "—"
+            proposals_display = f" · 📨 {job_proposals}" if job_proposals else ""
+            st.markdown(f"<div style='background:#f0f4ff; padding:8px 12px; border-radius:6px; text-align:center;'>"
+                        f"<div style='font-size:12px; color:#666;'>Posted</div>"
+                        f"<div style='font-size:15px; font-weight:600; color:#1a1a2e;'>📅 {posted_display}{proposals_display}</div>"
+                        f"</div>", unsafe_allow_html=True)
+
+        # ── 4. SKILLS PILLS + CATEGORIES + KEY TOOLS ──
+        job_skills = prop.get('job_skills') or ''
+        job_categories = prop.get('job_categories') or ''
+        job_key_tools = prop.get('job_key_tools') or ''
+
+        has_tags = False
+
+        # Skills as pill tags
+        if job_skills:
+            try:
+                skills_list = json.loads(job_skills) if isinstance(job_skills, str) else job_skills
+                if skills_list:
+                    pills = " ".join(
+                        f'<span style="display:inline-block; background:#e8f0fe; color:#1967d2; '
+                        f'padding:3px 10px; border-radius:12px; font-size:13px; margin:2px 3px;">{s}</span>'
+                        for s in skills_list
+                    )
+                    st.markdown(f"<div style='margin:10px 0 4px 0;'>{pills}</div>", unsafe_allow_html=True)
+                    has_tags = True
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Categories and key tools on one line
+        cat_parts = []
+        if job_categories:
+            try:
+                cats = json.loads(job_categories) if isinstance(job_categories, str) else job_categories
+                if cats:
+                    cat_parts.append(f"**Categories:** {' · '.join(cats)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if job_key_tools:
+            try:
+                tools = json.loads(job_key_tools) if isinstance(job_key_tools, str) else job_key_tools
+                if tools:
+                    cat_parts.append(f"**Key Tools:** {', '.join(tools)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if cat_parts:
+            st.markdown(" &nbsp;|&nbsp; ".join(cat_parts), unsafe_allow_html=True)
+            has_tags = True
+
+        if has_tags:
+            st.markdown("")  # spacing
+
+        # ── 5. MATCH REASONS (collapsed expander) ──
         if reasons:
-            st.markdown("**Match Reasons:**")
-            for reason in reasons[:5]:
-                criterion = reason.get('criterion', '')
-                score = reason.get('score', 0)
-                detail = reason.get('detail', '')
-                weight = reason.get('weight', 0)
-                points = score * weight
-                st.markdown(f"- **{criterion}**: {score:.2f}/1.00 × {weight} = {points:.1f} pts — {detail}")
+            with st.expander("🎯 Match Reasons"):
+                for reason in reasons[:5]:
+                    criterion = reason.get('criterion', '')
+                    score = reason.get('score', 0)
+                    detail = reason.get('detail', '')
+                    weight = reason.get('weight', 0)
+                    points = score * weight
+                    st.markdown(f"- **{criterion}**: {score:.2f}/1.00 × {weight} = {points:.1f} pts — {detail}")
 
+        # ── 6. ACTION BUTTONS + PROPOSAL TOGGLE ──
         st.markdown("---")
 
-        # Proposal text display with inline editing
-        st.markdown("**Proposal:**")
-        if user_edited:
-            st.info("✏️ This proposal has been edited")
+        # Session state for proposal visibility
+        show_key = f"show_proposal_{job_uid}"
+        if show_key not in st.session_state:
+            st.session_state[show_key] = False
 
-        # Edit mode toggle and copy button (hide edit button in read-only mode)
-        edit_key = f"edit_mode_{job_uid}"
-        copy_key = f"copy_mode_{job_uid}"
-        if edit_key not in st.session_state:
-            st.session_state[edit_key] = False
-        if copy_key not in st.session_state:
-            st.session_state[copy_key] = False
-
-        if read_only:
-            # Read-only: only show copy button
-            col_a, col_b = st.columns([6, 1])
-            with col_b:
-                if st.button("📋 Copy",
-                            key=f"toggle_copy_{job_uid}",
-                            width="stretch",
-                            help="Show proposal in copyable format"):
-                    st.session_state[copy_key] = not st.session_state[copy_key]
-                    st.rerun()
-        else:
-            # Full mode: show copy and edit buttons
-            col_a, col_b, col_c = st.columns([5, 1, 1])
-            with col_b:
-                if st.button("📋 Copy",
-                            key=f"toggle_copy_{job_uid}",
-                            width="stretch",
-                            help="Show proposal in copyable format"):
-                    st.session_state[copy_key] = not st.session_state[copy_key]
-                    st.rerun()
-            with col_c:
-                if st.button("✏️ Edit" if not st.session_state[edit_key] else "👁️ View",
-                            key=f"toggle_edit_{job_uid}",
-                            width="stretch"):
-                    st.session_state[edit_key] = not st.session_state[edit_key]
-                    st.session_state[copy_key] = False  # Close copy mode when entering edit mode
-                    st.rerun()
-
-        # Show copyable format if copy mode is active
-        if st.session_state[copy_key]:
-            st.info("💡 Click the copy icon (📋) in the top-right corner of the code block below to copy the proposal")
-            st.code(proposal_text, language=None)
-
-        # Show editor or read-only view
-        if not read_only and st.session_state[edit_key]:
-            # Edit mode - text area
-            edited_proposal = st.text_area(
-                "Edit your proposal",
-                value=proposal_text,
-                height=300,
-                key=f"proposal_editor_{job_uid}",
-                label_visibility='collapsed'
-            )
-
-            # Word count for edited text
-            edit_word_count = len(edited_proposal.split())
-            edit_char_count = len(edited_proposal)
-
-            # Show count with color coding based on Upwork limits
-            # Upwork has a 5000 character limit for cover letters
-            char_color = "red" if edit_char_count > 5000 else ("orange" if edit_char_count > 4500 else "green")
-            st.markdown(f"📊 <span style='color: {char_color};'>{edit_word_count} words • {edit_char_count}/5000 characters</span>",
-                       unsafe_allow_html=True)
-
-            # Save button
-            if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", width="stretch"):
-                if update_proposal_text(proposal_id, edited_proposal):
-                    st.success("✅ Proposal saved!")
-                    st.session_state[edit_key] = False  # Exit edit mode
-                    st.rerun()
-                else:
-                    st.error("❌ Failed to save proposal")
-        else:
-            # Read-only view
-            st.markdown(f"<div style='background: #f8f9fa; padding: 16px; border-radius: 8px; "
-                       f"white-space: pre-wrap; font-family: system-ui; color: #262730;'>{proposal_text}</div>",
-                       unsafe_allow_html=True)
-
-            word_count = len(proposal_text.split())
-            char_count = len(proposal_text)
-            st.caption(f"📊 {word_count} words • {char_count} characters")
-
-        # User rating section (only show after submission or in submitted state)
-        if not read_only and status in ['submitted', 'approved']:
-            st.markdown("---")
-            st.markdown("**Rate this proposal quality:**")
-
-            # Get current rating
-            current_rating = prop.get('user_rating')
-
-            # Rating buttons (1-5 stars)
-            col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 2])
-
-            with col1:
-                if st.button("⭐" if current_rating != 1 else "⭐ 1", key=f"rate1_{job_uid}", width="stretch"):
-                    update_proposal_rating(job_uid, 1)
-                    st.rerun()
-            with col2:
-                if st.button("⭐" if current_rating != 2 else "⭐ 2", key=f"rate2_{job_uid}", width="stretch"):
-                    update_proposal_rating(job_uid, 2)
-                    st.rerun()
-            with col3:
-                if st.button("⭐" if current_rating != 3 else "⭐ 3", key=f"rate3_{job_uid}", width="stretch"):
-                    update_proposal_rating(job_uid, 3)
-                    st.rerun()
-            with col4:
-                if st.button("⭐" if current_rating != 4 else "⭐ 4", key=f"rate4_{job_uid}", width="stretch"):
-                    update_proposal_rating(job_uid, 4)
-                    st.rerun()
-            with col5:
-                if st.button("⭐" if current_rating != 5 else "⭐ 5", key=f"rate5_{job_uid}", width="stretch"):
-                    update_proposal_rating(job_uid, 5)
-                    st.rerun()
-            with col6:
-                if current_rating:
-                    st.markdown(f"<div style='padding: 8px; text-align: center;'>Current: {'⭐' * current_rating} ({current_rating}/5)</div>",
-                               unsafe_allow_html=True)
-                else:
-                    st.caption("Not rated yet")
-
-        # Action buttons (hide in read-only mode)
         if not read_only:
-            st.markdown("---")
-            col1, col2, col3, col4 = st.columns(4)
-
             # State machine: valid transitions
             valid_transitions = {
                 'pending_review': ['approved', 'rejected'],
                 'approved': ['submitted', 'pending_review'],
-                'submitted': [],  # Terminal state
-                'rejected': ['pending_review'],  # Can reconsider
-                'failed': ['pending_review']  # Can retry
+                'submitted': [],
+                'rejected': ['pending_review'],
+                'failed': ['pending_review']
             }
-
             allowed_statuses = valid_transitions.get(status, [])
 
-            with col1:
+            act1, act2, act3, act4, spacer, toggle_col = st.columns([1, 1, 1.2, 1.2, 1.6, 1.5])
+
+            with act1:
                 if 'approved' in allowed_statuses:
-                    if st.button("✅ Approve", key=f"approve_{job_uid}", width="stretch"):
+                    if st.button("✅ Approve", key=f"approve_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'approved'):
-                            st.success("✅ Proposal approved!")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to update status")
-
-            with col2:
+            with act2:
                 if 'rejected' in allowed_statuses:
-                    if st.button("❌ Reject", key=f"reject_{job_uid}", width="stretch"):
+                    if st.button("❌ Reject", key=f"reject_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'rejected'):
-                            st.success("Proposal rejected")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to update status")
-
-            with col3:
+            with act3:
                 if 'submitted' in allowed_statuses:
-                    if st.button("🚀 Mark Submitted", key=f"submit_{job_uid}", width="stretch"):
+                    if st.button("🚀 Submitted", key=f"submit_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'submitted'):
-                            st.success("🚀 Marked as submitted!")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to update status")
-
-            with col4:
+            with act4:
                 if 'pending_review' in allowed_statuses:
-                    if st.button("🔄 Reset to Pending", key=f"reset_{job_uid}", width="stretch"):
+                    if st.button("🔄 Reset", key=f"reset_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'pending_review'):
-                            st.success("🔄 Reset to pending")
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to update status")
+            with toggle_col:
+                toggle_label = "📄 Hide Proposal" if st.session_state[show_key] else "📄 Show Proposal"
+                if st.button(toggle_label, key=f"toggle_proposal_{job_uid}", use_container_width=True):
+                    st.session_state[show_key] = not st.session_state[show_key]
+                    st.rerun()
+        else:
+            # Read-only: just show the proposal toggle
+            spacer_ro, toggle_col_ro = st.columns([5, 1.5])
+            with toggle_col_ro:
+                toggle_label = "📄 Hide Proposal" if st.session_state[show_key] else "📄 Show Proposal"
+                if st.button(toggle_label, key=f"toggle_proposal_{job_uid}", use_container_width=True):
+                    st.session_state[show_key] = not st.session_state[show_key]
+                    st.rerun()
 
-        # Job details expander
-        with st.expander("📄 View Job Details"):
-            st.markdown(f"**Description:**")
-            st.markdown(job['description'] or 'No description available')
+        # ── 7. PROPOSAL SECTION (toggled) ──
+        if st.session_state[show_key]:
+            st.markdown("---")
 
-            st.markdown(f"**Budget:** {job['job_type']}")
-            if job['job_type'] == 'Fixed' and job.get('fixed_price'):
-                st.markdown(f"${job['fixed_price']:,.0f}")
-            elif job['job_type'] == 'Hourly' and job.get('hourly_rate_min'):
-                st.markdown(f"${job['hourly_rate_min']:.0f}/hr - ${job.get('hourly_rate_max', 0):.0f}/hr")
+            if user_edited:
+                st.info("✏️ This proposal has been edited by you")
 
-            if job.get('experience_level'):
-                st.markdown(f"**Experience:** {job['experience_level']}")
+            # Edit/Copy mode toggles
+            edit_key = f"edit_mode_{job_uid}"
+            copy_key = f"copy_mode_{job_uid}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = False
+            if copy_key not in st.session_state:
+                st.session_state[copy_key] = False
 
-            # AI classification
-            if job.get('categories'):
-                try:
-                    cats = json.loads(job['categories'])
-                    st.markdown(f"**Categories:** {', '.join(cats)}")
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            if read_only:
+                col_a, col_b = st.columns([6, 1])
+                with col_b:
+                    if st.button("📋 Copy", key=f"toggle_copy_{job_uid}", use_container_width=True,
+                                 help="Show proposal in copyable format"):
+                        st.session_state[copy_key] = not st.session_state[copy_key]
+                        st.rerun()
+            else:
+                col_a, col_b, col_c = st.columns([5, 1, 1])
+                with col_b:
+                    if st.button("📋 Copy", key=f"toggle_copy_{job_uid}", use_container_width=True,
+                                 help="Show proposal in copyable format"):
+                        st.session_state[copy_key] = not st.session_state[copy_key]
+                        st.rerun()
+                with col_c:
+                    if st.button("✏️ Edit" if not st.session_state[edit_key] else "👁️ View",
+                                 key=f"toggle_edit_{job_uid}", use_container_width=True):
+                        st.session_state[edit_key] = not st.session_state[edit_key]
+                        st.session_state[copy_key] = False
+                        st.rerun()
 
-            if job.get('key_tools'):
-                try:
-                    tools = json.loads(job['key_tools'])
-                    st.markdown(f"**Key Tools:** {', '.join(tools)}")
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            # Copyable format
+            if st.session_state[copy_key]:
+                st.info("💡 Click the copy icon in the top-right corner of the code block below")
+                st.code(proposal_text, language=None)
+
+            # Editor or read-only text
+            if not read_only and st.session_state[edit_key]:
+                edited_proposal = st.text_area(
+                    "Edit your proposal",
+                    value=proposal_text,
+                    height=300,
+                    key=f"proposal_editor_{job_uid}",
+                    label_visibility='collapsed'
+                )
+                edit_word_count = len(edited_proposal.split())
+                edit_char_count = len(edited_proposal)
+                char_color = "red" if edit_char_count > 5000 else ("orange" if edit_char_count > 4500 else "green")
+                st.markdown(f"📊 <span style='color: {char_color};'>{edit_word_count} words • "
+                            f"{edit_char_count}/5000 characters</span>", unsafe_allow_html=True)
+
+                if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", use_container_width=True):
+                    if update_proposal_text(proposal_id, edited_proposal):
+                        st.success("✅ Proposal saved!")
+                        st.session_state[edit_key] = False
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to save proposal")
+            else:
+                st.markdown(f"<div style='background: #f8f9fa; padding: 16px; border-radius: 8px; "
+                            f"white-space: pre-wrap; font-family: system-ui; color: #262730;'>"
+                            f"{proposal_text}</div>", unsafe_allow_html=True)
+                word_count = len(proposal_text.split())
+                char_count = len(proposal_text)
+                st.caption(f"📊 {word_count} words • {char_count} characters")
+
+            # Rating (for submitted/approved)
+            if not read_only and status in ['submitted', 'approved']:
+                st.markdown("**Rate this proposal:**")
+                current_rating = prop.get('user_rating')
+                r1, r2, r3, r4, r5, r_info = st.columns([1, 1, 1, 1, 1, 2])
+                for col, val in [(r1, 1), (r2, 2), (r3, 3), (r4, 4), (r5, 5)]:
+                    with col:
+                        label = f"{'⭐' * val}" if current_rating == val else f"{'⭐' * val}"
+                        if st.button(label, key=f"rate{val}_{job_uid}", use_container_width=True):
+                            update_proposal_rating(job_uid, val)
+                            st.rerun()
+                with r_info:
+                    if current_rating:
+                        st.markdown(f"Current: {'⭐' * current_rating} ({current_rating}/5)")
+                    else:
+                        st.caption("Not rated yet")
+
+        # ── 8. FULL JOB DESCRIPTION (expander) ──
+        job_description = prop.get('job_description') or ''
+        if job_description:
+            with st.expander("📄 Full Job Description"):
+                st.markdown(job_description)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
