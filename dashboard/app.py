@@ -26,7 +26,12 @@ import plotly.graph_objects as go
 
 import yaml
 
+import logging
+
 import config
+
+log = logging.getLogger(__name__)
+
 from database.db import (
     init_db,
     get_all_jobs,
@@ -42,6 +47,7 @@ from database.db import (
     update_proposal_text,
     update_proposal_rating,
     get_proposal_analytics,
+    get_proposal_stats,
 )
 from dashboard.analytics import (
     jobs_to_dataframe,
@@ -855,14 +861,30 @@ def render_proposals_tab():
 
             st.markdown("---")
     except Exception as e:
+        st.warning(f"Could not load proposal analytics: {e}")
         log.warning(f"Failed to load proposal analytics: {e}")
 
     # Load proposals
-    proposals = get_proposals()
+    try:
+        proposals = get_proposals()
+    except Exception as e:
+        st.error(f"Failed to load proposals: {e}")
+        log.error(f"Failed to load proposals: {e}")
+        proposals = []
 
     if not proposals:
-        st.info("📝 No proposals generated yet. Run the monitor pipeline to generate proposals:")
-        st.code("python main.py monitor --new")
+        # Diagnostic: check raw proposal count (without JOIN)
+        try:
+            stats = get_proposal_stats()
+            if stats.get('total', 0) > 0:
+                st.warning(f"{stats['total']} proposals exist in DB but none matched jobs (JOIN failed). "
+                          f"This may indicate a UID mismatch between proposals and jobs tables.")
+            else:
+                st.info("No proposals generated yet. Run the monitor pipeline to generate proposals:")
+                st.code("python main.py monitor --new")
+        except Exception:
+            st.info("No proposals generated yet. Run the monitor pipeline to generate proposals:")
+            st.code("python main.py monitor --new")
         return
 
     # Convert to dataframe for easier filtering
@@ -886,24 +908,24 @@ def render_proposals_tab():
 
         with col1:
             if st.button("✅ Approve Selected", width="stretch"):
-                for uid in st.session_state.selected_proposals:
-                    update_proposal_status(uid, 'approved')
+                for pid in st.session_state.selected_proposals:
+                    update_proposal_status(pid, 'approved')
                 st.success(f"✅ Approved {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 st.rerun()
 
         with col2:
             if st.button("❌ Reject Selected", width="stretch"):
-                for uid in st.session_state.selected_proposals:
-                    update_proposal_status(uid, 'rejected')
+                for pid in st.session_state.selected_proposals:
+                    update_proposal_status(pid, 'rejected')
                 st.success(f"Rejected {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 st.rerun()
 
         with col3:
             if st.button("🔄 Reset Selected", width="stretch"):
-                for uid in st.session_state.selected_proposals:
-                    update_proposal_status(uid, 'pending_review')
+                for pid in st.session_state.selected_proposals:
+                    update_proposal_status(pid, 'pending_review')
                 st.success(f"Reset {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 st.rerun()
@@ -986,6 +1008,7 @@ def render_proposal_card(prop, read_only=False):
         read_only: If True, hide all editing and status change buttons
     """
     job_uid = prop['job_uid']
+    proposal_id = prop['id']  # Integer primary key — used for all DB update operations
     status = prop['status']
     match_score = prop.get('match_score', 0)
     proposal_text = prop.get('edited_text') or prop.get('proposal_text', '')
@@ -1034,15 +1057,15 @@ def render_proposal_card(prop, read_only=False):
         else:
             col1, col2, col3, col4 = st.columns([0.3, 4.7, 1, 1])
             with col1:
-                # Bulk selection checkbox
-                is_selected = job_uid in st.session_state.get('selected_proposals', set())
+                # Bulk selection checkbox (stores proposal_id for DB operations)
+                is_selected = proposal_id in st.session_state.get('selected_proposals', set())
                 if st.checkbox("", value=is_selected, key=f"select_{job_uid}", label_visibility='collapsed'):
                     if 'selected_proposals' not in st.session_state:
                         st.session_state.selected_proposals = set()
-                    st.session_state.selected_proposals.add(job_uid)
+                    st.session_state.selected_proposals.add(proposal_id)
                 else:
-                    if 'selected_proposals' in st.session_state and job_uid in st.session_state.selected_proposals:
-                        st.session_state.selected_proposals.discard(job_uid)
+                    if 'selected_proposals' in st.session_state and proposal_id in st.session_state.selected_proposals:
+                        st.session_state.selected_proposals.discard(proposal_id)
         with col2:
             st.markdown(f"### [{job_title}]({job_url})")
         with col3:
@@ -1134,7 +1157,7 @@ def render_proposal_card(prop, read_only=False):
 
             # Save button
             if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", width="stretch"):
-                if update_proposal_text(job_uid, edited_proposal):
+                if update_proposal_text(proposal_id, edited_proposal):
                     st.success("✅ Proposal saved!")
                     st.session_state[edit_key] = False  # Exit edit mode
                     st.rerun()
@@ -1207,7 +1230,7 @@ def render_proposal_card(prop, read_only=False):
             with col1:
                 if 'approved' in allowed_statuses:
                     if st.button("✅ Approve", key=f"approve_{job_uid}", width="stretch"):
-                        if update_proposal_status(job_uid, 'approved'):
+                        if update_proposal_status(proposal_id, 'approved'):
                             st.success("✅ Proposal approved!")
                             st.rerun()
                         else:
@@ -1216,7 +1239,7 @@ def render_proposal_card(prop, read_only=False):
             with col2:
                 if 'rejected' in allowed_statuses:
                     if st.button("❌ Reject", key=f"reject_{job_uid}", width="stretch"):
-                        if update_proposal_status(job_uid, 'rejected'):
+                        if update_proposal_status(proposal_id, 'rejected'):
                             st.success("Proposal rejected")
                             st.rerun()
                         else:
@@ -1225,7 +1248,7 @@ def render_proposal_card(prop, read_only=False):
             with col3:
                 if 'submitted' in allowed_statuses:
                     if st.button("🚀 Mark Submitted", key=f"submit_{job_uid}", width="stretch"):
-                        if update_proposal_status(job_uid, 'submitted'):
+                        if update_proposal_status(proposal_id, 'submitted'):
                             st.success("🚀 Marked as submitted!")
                             st.rerun()
                         else:
@@ -1234,7 +1257,7 @@ def render_proposal_card(prop, read_only=False):
             with col4:
                 if 'pending_review' in allowed_statuses:
                     if st.button("🔄 Reset to Pending", key=f"reset_{job_uid}", width="stretch"):
-                        if update_proposal_status(job_uid, 'pending_review'):
+                        if update_proposal_status(proposal_id, 'pending_review'):
                             st.success("🔄 Reset to pending")
                             st.rerun()
                         else:
@@ -1867,8 +1890,13 @@ def main():
     fav_label = f"⭐ Favorites ({fav_count})" if fav_count > 0 else "⭐ Favorites"
 
     # Count pending proposals
-    proposals = get_proposals()
-    pending_proposals = len([p for p in proposals if p['status'] == 'pending_review'])
+    try:
+        proposals = get_proposals()
+        pending_proposals = len([p for p in proposals if p['status'] == 'pending_review'])
+    except Exception as e:
+        log.error(f"Failed to load proposals for tab count: {e}")
+        proposals = []
+        pending_proposals = 0
     proposals_label = f"✍️ Proposals ({pending_proposals})" if pending_proposals > 0 else "✍️ Proposals"
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
