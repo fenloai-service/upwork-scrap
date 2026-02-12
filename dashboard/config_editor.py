@@ -61,20 +61,25 @@ def save_yaml_config(filename: str, data: dict) -> bool:
     Returns:
         True if saved successfully, False otherwise.
     """
-    global _last_save_target
+    global _last_save_target, _last_save_error
+    _last_save_error = ""
 
     # Save to database (primary storage)
     try:
         from database.db import save_setting
-        if save_setting(_config_key(filename), data):
+        key = _config_key(filename)
+        result = save_setting(key, data)
+        if result:
             log.info(f"Config saved to DB: {filename}")
             _last_save_target = "db"
             # Also write YAML as local backup (best-effort)
             _write_yaml_backup(filename, data)
             return True
         else:
-            log.warning(f"save_setting returned False for {filename}")
+            _last_save_error = f"save_setting('{key}') returned False"
+            log.warning(_last_save_error)
     except Exception as e:
+        _last_save_error = f"DB save exception: {e}"
         log.warning(f"DB save failed for {filename}, falling back to YAML: {e}")
 
     # Fall back to YAML-only save
@@ -84,11 +89,17 @@ def save_yaml_config(filename: str, data: dict) -> bool:
 
 # Track where the last save went (for diagnostic display)
 _last_save_target = ""
+_last_save_error = ""
 
 
 def get_last_save_target() -> str:
     """Return where the last save_yaml_config() call stored data ('db' or 'yaml')."""
     return _last_save_target
+
+
+def get_last_save_error() -> str:
+    """Return error detail from the last save attempt (empty if save went to DB)."""
+    return _last_save_error
 
 
 def _write_yaml_backup(filename: str, data: dict) -> bool:
