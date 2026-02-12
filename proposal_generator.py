@@ -35,7 +35,17 @@ RETRY_DELAYS = [5, 15, 60]  # seconds: exponential backoff
 
 
 def load_config_file(filename: str) -> dict:
-    """Load and parse a YAML config file."""
+    """Load and parse a config file — tries DB first, falls back to YAML."""
+    # Try database first
+    try:
+        from database.db import load_config_from_db
+        db_data = load_config_from_db(filename)
+        if db_data is not None:
+            return db_data
+    except Exception:
+        pass
+
+    # Fall back to YAML file
     filepath = config.CONFIG_DIR / filename
     try:
         with open(filepath) as f:

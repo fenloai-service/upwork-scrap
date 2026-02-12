@@ -27,7 +27,17 @@ import config
 
 
 def load_email_config() -> dict:
-    """Load email configuration from config/email_config.yaml."""
+    """Load email configuration — tries DB first, falls back to YAML."""
+    # Try database first
+    try:
+        from database.db import load_config_from_db
+        db_data = load_config_from_db("email_config")
+        if db_data is not None:
+            return db_data.get('email', db_data)
+    except Exception:
+        pass
+
+    # Fall back to YAML file
     config_path = config.CONFIG_DIR / "email_config.yaml"
 
     if not config_path.exists():

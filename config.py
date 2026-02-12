@@ -31,7 +31,17 @@ for d in [PAGES_DIR, DETAIL_PAGES_DIR, REPORTS_DIR, CONFIG_DIR, EMAILS_DIR]:
 # ── YAML Config Loader ────────────────────────────────────────────────────────
 
 def _load_scraping_config() -> dict:
-    """Load scraping settings from config/scraping.yaml with hardcoded fallbacks."""
+    """Load scraping settings — tries DB first, falls back to YAML, then hardcoded defaults."""
+    # Try database first
+    try:
+        from database.db import load_config_from_db
+        db_data = load_config_from_db("scraping")
+        if db_data is not None:
+            return db_data.get("scraping", db_data)
+    except Exception:
+        pass
+
+    # Fall back to YAML file
     yaml_path = CONFIG_DIR / "scraping.yaml"
     try:
         with open(yaml_path) as f:

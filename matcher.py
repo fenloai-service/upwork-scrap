@@ -12,7 +12,7 @@ from database.db import _to_float
 
 
 def load_preferences() -> dict:
-    """Load job preferences from config/job_preferences.yaml.
+    """Load job preferences — tries DB first, falls back to YAML.
 
     Returns:
         dict: Preferences configuration with required keys validated.
@@ -21,13 +21,26 @@ def load_preferences() -> dict:
         FileNotFoundError: If config file doesn't exist.
         KeyError: If required keys are missing.
     """
-    preferences_path = config.CONFIG_DIR / "job_preferences.yaml"
+    data = None
 
-    if not preferences_path.exists():
-        raise FileNotFoundError(f"Preferences config not found: {preferences_path}")
+    # Try database first
+    try:
+        from database.db import load_config_from_db
+        db_data = load_config_from_db("job_preferences")
+        if db_data is not None:
+            data = db_data
+    except Exception:
+        pass
 
-    with open(preferences_path, "r") as f:
-        data = yaml.safe_load(f)
+    # Fall back to YAML file
+    if data is None:
+        preferences_path = config.CONFIG_DIR / "job_preferences.yaml"
+
+        if not preferences_path.exists():
+            raise FileNotFoundError(f"Preferences config not found: {preferences_path}")
+
+        with open(preferences_path, "r") as f:
+            data = yaml.safe_load(f)
 
     # Validate required keys
     if "preferences" not in data:

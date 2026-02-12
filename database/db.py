@@ -154,6 +154,15 @@ def _init_db_sqlite():
         except sqlite3.OperationalError:
             pass
 
+        # Settings table (key-value store for dashboard/config settings)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
     finally:
         conn.close()
@@ -247,6 +256,15 @@ def _init_db_postgres():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proposals_generated ON proposals(generated_at)"
         )
+
+        # Settings table (key-value store for dashboard/config settings)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         conn.commit()
     finally:
@@ -943,3 +961,122 @@ def proposal_exists(job_uid: str) -> bool:
         return result is not None
     finally:
         conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Settings CRUD (key-value config store)
+# ══════════════════════════════════════════════════════════════════════════════
+
+VALID_SETTING_KEYS = frozenset({
+    "scraping", "ai_models", "user_profile", "projects",
+    "proposal_guidelines", "job_preferences", "email_config",
+})
+
+
+def get_setting(key: str) -> dict | None:
+    """Get a setting value from the database.
+
+    Args:
+        key: Setting key (e.g., "scraping", "ai_models").
+
+    Returns:
+        Parsed JSON dict, or None if not found.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, KeyError) as e:
+        log.warning(f"Failed to parse setting '{key}': {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def save_setting(key: str, value: dict) -> bool:
+    """Upsert a setting value into the database.
+
+    Args:
+        key: Setting key (must be in VALID_SETTING_KEYS).
+        value: Dict to serialize as JSON.
+
+    Returns:
+        True if saved successfully, False otherwise.
+    """
+    if key not in VALID_SETTING_KEYS:
+        log.warning(f"Invalid setting key: {key}")
+        return False
+
+    conn = get_connection()
+    try:
+        json_value = json.dumps(value, ensure_ascii=False)
+        if is_postgres():
+            conn.execute(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT (key)
+                   DO UPDATE SET value = EXCLUDED.value,
+                                 updated_at = CURRENT_TIMESTAMP""",
+                (key, json_value),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key)
+                   DO UPDATE SET value = excluded.value,
+                                 updated_at = CURRENT_TIMESTAMP""",
+                (key, json_value),
+            )
+        conn.commit()
+        log.info(f"Setting saved: {key}")
+        return True
+    except Exception as e:
+        log.error(f"Failed to save setting '{key}': {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_all_settings() -> dict[str, dict]:
+    """Get all settings from the database.
+
+    Returns:
+        Dict mapping key -> parsed JSON value.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        result = {}
+        for row in rows:
+            try:
+                result[row["key"]] = json.loads(row["value"])
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return result
+    finally:
+        conn.close()
+
+
+def load_config_from_db(config_name: str) -> dict | None:
+    """Load a config from the database with exception handling.
+
+    Thin wrapper around get_setting() for use by config consumers.
+    Strips '.yaml' suffix if present.
+
+    Args:
+        config_name: Config key (e.g., "scraping" or "scraping.yaml").
+
+    Returns:
+        Parsed dict, or None if not found or on any error.
+    """
+    try:
+        key = config_name.replace(".yaml", "")
+        return get_setting(key)
+    except Exception as e:
+        log.debug(f"DB config lookup failed for '{config_name}': {e}")
+        return None

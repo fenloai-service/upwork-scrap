@@ -22,7 +22,7 @@ _CONFIG_PATH = config.CONFIG_DIR / "ai_models.yaml"
 
 
 def load_ai_config(config_path: Path = None) -> dict:
-    """Load AI models configuration from YAML.
+    """Load AI models configuration — tries DB first, falls back to YAML.
 
     Args:
         config_path: Override path for testing. Defaults to config/ai_models.yaml.
@@ -33,6 +33,15 @@ def load_ai_config(config_path: Path = None) -> dict:
     Raises:
         FileNotFoundError: If config file doesn't exist.
     """
+    if config_path is None:
+        try:
+            from database.db import load_config_from_db
+            db_data = load_config_from_db("ai_models")
+            if db_data is not None:
+                return db_data
+        except Exception:
+            pass
+
     path = config_path or _CONFIG_PATH
     with open(path) as f:
         data = yaml.safe_load(f)
