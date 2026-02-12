@@ -30,8 +30,8 @@ def load_yaml_config(filename: str) -> dict:
     """
     # Try database first
     try:
-        from database.db import get_setting
-        db_data = get_setting(_config_key(filename))
+        import database.db as _db_mod
+        db_data = _db_mod.get_setting(_config_key(filename))
         if db_data is not None:
             return db_data
     except Exception as e:
@@ -66,9 +66,9 @@ def save_yaml_config(filename: str, data: dict) -> bool:
 
     # Save to database (primary storage)
     try:
-        from database.db import save_setting
+        import database.db as _db_mod
         key = _config_key(filename)
-        result = save_setting(key, data)
+        result = _db_mod.save_setting(key, data)
         if result:
             log.info(f"Config saved to DB: {filename}")
             _last_save_target = "db"
@@ -79,7 +79,13 @@ def save_yaml_config(filename: str, data: dict) -> bool:
             _last_save_error = f"save_setting('{key}') returned False"
             log.warning(_last_save_error)
     except Exception as e:
-        _last_save_error = f"DB save exception: {e}"
+        # Diagnose what's available in the module
+        try:
+            import database.db as _dbg
+            avail = [n for n in dir(_dbg) if 'sett' in n.lower() or 'save' in n.lower()]
+        except Exception:
+            avail = ["module import failed"]
+        _last_save_error = f"DB save exception: {e} | available: {avail}"
         log.warning(f"DB save failed for {filename}, falling back to YAML: {e}")
 
     # Fall back to YAML-only save
@@ -144,8 +150,8 @@ def get_config_files() -> list[dict]:
     # Check which keys exist in DB
     db_keys = set()
     try:
-        from database.db import get_all_settings
-        db_keys = set(get_all_settings().keys())
+        import database.db as _db_mod
+        db_keys = set(_db_mod.get_all_settings().keys())
     except Exception:
         pass
 
