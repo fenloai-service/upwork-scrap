@@ -1202,7 +1202,7 @@ def render_proposal_card(prop, read_only=False):
         else:
             # Read-only view
             st.markdown(f"<div style='background: #f8f9fa; padding: 16px; border-radius: 8px; "
-                       f"white-space: pre-wrap; font-family: system-ui;'>{proposal_text}</div>",
+                       f"white-space: pre-wrap; font-family: system-ui; color: #262730;'>{proposal_text}</div>",
                        unsafe_allow_html=True)
 
             word_count = len(proposal_text.split())
