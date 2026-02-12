@@ -1751,7 +1751,11 @@ def render_scraping_ai_tab():
 
     # ── Database & Cache ─────────────────────────────────────────────────────
     st.subheader("Database & Cache")
-    st.code(f"Database: {config.DB_PATH}")
+    from database.adapter import is_postgres
+    if is_postgres():
+        st.code(f"Database: PostgreSQL (Neon)")
+    else:
+        st.code(f"Database: SQLite ({config.DB_PATH})")
     st.code(f"Data Dir: {config.DATA_DIR}")
 
     if st.button("Clear Cache & Reload"):
