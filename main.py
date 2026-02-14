@@ -675,25 +675,6 @@ async def cmd_monitor_new(dry_run: bool = False):
             print("\nNo new jobs to process. Pipeline complete.")
             return
 
-        # Stage 2.5: Date filtering (before classification to save API calls)
-        from matcher import filter_jobs_by_date
-        from config_loader import load_config
-        prefs = load_config("job_preferences", top_level_key="preferences", default={})
-        max_age_days = prefs.get("max_job_age_days", 0)
-
-        if max_age_days > 0:
-            new_jobs = [j for j in get_all_jobs() if j["uid"] in new_uids]
-            filtered_jobs, filtered_out = filter_jobs_by_date(new_jobs, max_age_days)
-            new_uids = {j["uid"] for j in filtered_jobs}
-
-            if filtered_out > 0:
-                print(f"  ℹ Filtered out {filtered_out} jobs older than {max_age_days} day(s)")
-                print(f"  → {len(new_uids)} jobs remaining for classification")
-
-            if not new_uids:
-                print(f"\nAll new jobs filtered out (older than {max_age_days} day(s)). Pipeline complete.")
-                return
-
         # Stage 3: Classify
         classified, err = _stage_classify(new_uids, dry_run)
         stats["jobs_classified"] = classified

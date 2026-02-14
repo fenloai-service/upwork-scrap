@@ -2,55 +2,12 @@
 
 import json
 import re
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import config
 from config_loader import load_config, ConfigError
 from database.db import _to_float
-
-
-def filter_jobs_by_date(jobs: list[dict], max_age_days: int = 0) -> tuple[list[dict], int]:
-    """Filter jobs by posting date.
-
-    Args:
-        jobs: List of job dictionaries.
-        max_age_days: Maximum age in days (0 = no filter, 1 = last 24 hours, etc.).
-
-    Returns:
-        tuple: (filtered_jobs, count_filtered_out)
-    """
-    if max_age_days <= 0:
-        return jobs, 0
-
-    cutoff_date = datetime.now() - timedelta(days=max_age_days)
-    filtered = []
-    filtered_out = 0
-
-    for job in jobs:
-        posted_str = job.get("posted_date_estimated", "")
-        if not posted_str:
-            # No date info - include the job (benefit of doubt)
-            filtered.append(job)
-            continue
-
-        try:
-            # Parse date (handles both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM" formats)
-            if len(posted_str) > 10:  # Has time component
-                posted_dt = datetime.strptime(posted_str, "%Y-%m-%d %H:%M")
-            else:  # Date only
-                posted_dt = datetime.strptime(posted_str, "%Y-%m-%d")
-
-            if posted_dt >= cutoff_date:
-                filtered.append(job)
-            else:
-                filtered_out += 1
-        except (ValueError, TypeError):
-            # Can't parse date - include the job
-            filtered.append(job)
-
-    return filtered, filtered_out
 
 
 def load_preferences() -> dict:
@@ -478,12 +435,6 @@ def get_matching_jobs(jobs: list[dict], preferences: dict = None, threshold: flo
 
     # Support both "threshold" and "match_threshold" keys
     threshold = preferences.get("match_threshold", preferences.get("threshold", threshold))
-
-    # Filter by date if configured
-    max_age_days = preferences.get("max_job_age_days", 0)
-    jobs, filtered_out = filter_jobs_by_date(jobs, max_age_days)
-    if filtered_out > 0:
-        print(f"  ℹ Filtered out {filtered_out} jobs older than {max_age_days} day(s)")
 
     # Score all jobs first
     scored_jobs = []

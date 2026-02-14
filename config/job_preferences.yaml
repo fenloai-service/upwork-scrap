@@ -45,4 +45,3 @@ preferences:
   - SEO only
   - social media management
   threshold: 50
-  max_job_age_days: 1  # Only process jobs posted within last N days (0 = no filter)
