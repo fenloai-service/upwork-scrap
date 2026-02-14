@@ -67,6 +67,9 @@ from dashboard.analytics import (
     keyword_distribution,
     generate_summary,
 )
+from dashboard.skill_explorer import render_skill_explorer, render_skill_search
+from dashboard.tech_stacks import render_tech_stacks
+from dashboard.job_types import render_job_type_insights
 from dashboard.config_editor import load_yaml_config, save_yaml_config, get_config_files
 from ai_client import get_client, test_connection, list_available_models, load_ai_config
 from matcher import score_job as matcher_score_job, load_preferences
@@ -992,21 +995,98 @@ def render_job_card(row):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_analytics_tab(df):
-    """Render the Analytics tab with charts and statistics."""
-    st.markdown("### 📊 Analytics Dashboard")
+def render_analytics_tab(df, filters):
+    """Render the improved Analytics tab with market intelligence."""
+    st.markdown("### 📊 Market Intelligence Dashboard")
+    st.caption("Explore job types, skills in demand, and technology stacks")
 
-    # Generate summary
-    summary = generate_summary(df)
+    # Apply the same filters as Jobs tab
+    date_filter = filters.get('date_filter', {"mode": "all", "start_date": None, "end_date": None})
+    score_range = filters.get('score_range', (0, 100))
 
-    # Top stats
+    # Apply date and score filters
+    filtered_df = filter_jobs_by_criteria(df, date_filter, score_range)
+
+    # Apply additional filters (search, category, tool, job_type, etc.)
+    filtered_df = filter_jobs(filtered_df, filters)
+
+    # Show filter summary
+    has_filters = (
+        date_filter["mode"] != "all" or
+        score_range != (0, 100) or
+        filters.get('search') or
+        filters.get('category') or
+        filters.get('key_tool') or
+        filters.get('job_type') or
+        filters.get('experience') or
+        filters.get('keyword') or
+        filters.get('budget_min', 0) > 0 or
+        filters.get('budget_max')
+    )
+
+    if has_filters:
+        st.info(f"📊 Showing analytics for **{len(filtered_df):,}** filtered jobs out of **{len(df):,}** total jobs")
+        if date_filter["mode"] != "all":
+            start_str = date_filter["start_date"].strftime("%Y-%m-%d") if hasattr(date_filter["start_date"], 'strftime') else str(date_filter["start_date"])
+            end_str = date_filter["end_date"].strftime("%Y-%m-%d") if hasattr(date_filter["end_date"], 'strftime') else str(date_filter["end_date"])
+            st.caption(f"📅 Date range: {start_str} to {end_str}")
+        if score_range != (0, 100):
+            st.caption(f"💯 Score range: {score_range[0]}-{score_range[1]}")
+    else:
+        st.info(f"📊 Showing analytics for **all {len(df):,} jobs**")
+
+    # Use filtered data for all analytics
+    display_df = filtered_df if has_filters else df
+
+    if display_df.empty:
+        st.warning("🔍 No jobs match your current filters. Try adjusting the filters in the sidebar.")
+        return
+
+    # Top-level metrics
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Jobs", f"{summary['total_jobs']:,}")
-    col2.metric("Keywords Tracked", summary['unique_keywords'])
-    col3.metric("Avg Match Score", f"{df['score'].mean():.1f}")
-    col4.metric("High Match Jobs", len(df[df['score'] >= 70]))
+
+    # Count unique skills
+    all_skills = set()
+    for skills in display_df['skills_list']:
+        if skills:
+            all_skills.update(skills)
+
+    col1.metric("Total Jobs", f"{len(display_df):,}")
+    col2.metric("Avg Match Score", f"{display_df['score'].mean():.1f}")
+    col3.metric("High Match (70+)", len(display_df[display_df['score'] >= 70]))
+    col4.metric("Unique Skills", len(all_skills))
 
     st.markdown("---")
+
+    # Tabbed interface for different analytics views
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🔍 Skills & Tech",
+        "🛠️ Tech Stacks",
+        "💼 Job Types",
+        "📊 Traditional Stats"
+    ])
+
+    with tab1:
+        # Skill Explorer and Search
+        render_skill_explorer(display_df)
+        st.markdown("---")
+        render_skill_search(display_df)
+
+    with tab2:
+        # Tech Stack Analysis
+        render_tech_stacks(display_df)
+
+    with tab3:
+        # Job Type Insights
+        render_job_type_insights(display_df)
+
+    with tab4:
+        # Traditional analytics (original charts)
+        render_traditional_analytics(display_df)
+
+
+def render_traditional_analytics(display_df):
+    """Render traditional analytics charts (original functionality)."""
 
     # Charts grid
     col1, col2 = st.columns(2)
@@ -1014,7 +1094,7 @@ def render_analytics_tab(df):
     with col1:
         # Job Type Distribution
         st.subheader("💼 Job Type Distribution")
-        job_type_dist = job_type_distribution(df)
+        job_type_dist = job_type_distribution(display_df)
         if not job_type_dist.empty:
             fig = px.pie(
                 job_type_dist,
@@ -1023,12 +1103,12 @@ def render_analytics_tab(df):
                 color_discrete_sequence=['#14a800', '#1976d2', '#f57c00']
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         # Experience Level Distribution
         st.subheader("🎓 Experience Level Distribution")
-        exp_dist = experience_distribution(df)
+        exp_dist = experience_distribution(display_df)
         if not exp_dist.empty:
             fig = px.bar(
                 exp_dist,
@@ -1038,11 +1118,11 @@ def render_analytics_tab(df):
                 color_continuous_scale='Greens'
             )
             fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Count")
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
     # Top Skills
     st.subheader("🛠️ Top Skills (Top 20)")
-    skill_freq = skill_frequency(df)
+    skill_freq = skill_frequency(display_df)
     if not skill_freq.empty:
         fig = px.bar(
             skill_freq.head(20),
@@ -1059,14 +1139,14 @@ def render_analytics_tab(df):
             yaxis_title="",
             yaxis={'categoryorder': 'total ascending'}
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     # Budget stats
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("💵 Hourly Rate Statistics")
-        h_stats = hourly_rate_stats(df)
+        h_stats = hourly_rate_stats(display_df)
         if h_stats.get('count', 0) > 0:
             st.metric("Jobs", h_stats['count'])
             st.metric("Median Rate", f"${h_stats['min_rate_median']:.0f} - ${h_stats['max_rate_median']:.0f}/hr")
@@ -1076,7 +1156,7 @@ def render_analytics_tab(df):
 
     with col2:
         st.subheader("💰 Fixed Price Statistics")
-        f_stats = fixed_price_stats(df)
+        f_stats = fixed_price_stats(display_df)
         if f_stats.get('count', 0) > 0:
             st.metric("Jobs", f_stats['count'])
             st.metric("Median Budget", f"${f_stats['median']:,.0f}")
@@ -1086,7 +1166,7 @@ def render_analytics_tab(df):
 
     # Category Distribution (if AI classified)
     all_categories = []
-    for cats in df['categories'].dropna():
+    for cats in display_df['categories'].dropna():
         all_categories.extend(cats)
 
     if all_categories:
@@ -1110,11 +1190,11 @@ def render_analytics_tab(df):
             yaxis_title="",
             yaxis={'categoryorder': 'total ascending'}
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     # Daily volume
     st.subheader("📈 Jobs Posted Over Time")
-    daily = daily_volume(df)
+    daily = daily_volume(display_df)
     if not daily.empty:
         fig = px.line(
             daily,
@@ -1127,7 +1207,7 @@ def render_analytics_tab(df):
             yaxis_title="Jobs Posted",
             showlegend=False
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No date data available for timeline")
 
@@ -2438,7 +2518,7 @@ def main():
         render_favorites_tab()
 
     with tab4:
-        render_analytics_tab(df)
+        render_analytics_tab(df, filters)
 
     with tab5:
         render_scraping_ai_tab()
