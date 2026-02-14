@@ -461,76 +461,12 @@ def parse_job_date(date_str: str) -> datetime:
         return datetime(2000, 1, 1)
 
 
-def render_date_filter(filter_type: str) -> dict:
-    """Render date range filter component in sidebar.
-
-    Args:
-        filter_type: "jobs" or "proposals"
-
-    Returns:
-        dict: {
-            "mode": "all" | "last_2" | "last_7" | "last_30" | "custom",
-            "start_date": date or None,
-            "end_date": date or None
-        }
-    """
-    st.markdown("📅 **Date Range**")
-
-    # Quick filter options
-    filter_mode = st.radio(
-        "Select Range",
-        options=["all", "last_2", "last_7", "last_30", "custom"],
-        format_func=lambda x: {
-            "all": "📚 All Time",
-            "last_2": "📅 Last 2 Days",
-            "last_7": "📆 Last 7 Days",
-            "last_30": "📆 Last 30 Days",
-            "custom": "🎯 Custom Range"
-        }[x],
-        index=1,  # Default to "last_2"
-        key=f"{filter_type}_date_mode"
-    )
-
-    start_date = None
-    end_date = None
-
-    if filter_mode == "last_2":
-        start_date = datetime.now() - timedelta(days=2)
-        end_date = datetime.now()
-    elif filter_mode == "last_7":
-        start_date = datetime.now() - timedelta(days=7)
-        end_date = datetime.now()
-    elif filter_mode == "last_30":
-        start_date = datetime.now() - timedelta(days=30)
-        end_date = datetime.now()
-    elif filter_mode == "custom":
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input(
-                "From",
-                value=datetime.now() - timedelta(days=30),
-                key=f"{filter_type}_start_date"
-            )
-        with col2:
-            end_date = st.date_input(
-                "To",
-                value=datetime.now(),
-                key=f"{filter_type}_end_date"
-            )
-
-    return {
-        "mode": filter_mode,
-        "start_date": start_date,
-        "end_date": end_date
-    }
-
-
 def filter_jobs_by_criteria(df, date_filter: dict, score_range: tuple) -> pd.DataFrame:
     """Filter jobs DataFrame by date and score range.
 
     Args:
         df: Jobs DataFrame
-        date_filter: Date filter dict from render_date_filter()
+        date_filter: Date filter dict from sidebar (mode, start_date, end_date)
         score_range: Tuple of (min_score, max_score)
 
     Returns:
@@ -575,7 +511,7 @@ def filter_proposals_by_criteria(df, date_filter: dict, score_range: tuple, stat
 
     Args:
         df: Proposals DataFrame
-        date_filter: Date filter dict from render_date_filter()
+        date_filter: Date filter dict from sidebar (mode, start_date, end_date)
         score_range: Tuple of (min_score, max_score)
         status_filter: List of statuses to include
 
@@ -688,6 +624,57 @@ def render_sidebar(df):
 
     filters = {}
 
+    # Date Range Filter
+    st.sidebar.markdown("### 📅 Date Range")
+    date_mode = st.sidebar.radio(
+        "Time Period",
+        options=["all", "last_2", "last_7", "last_30", "custom"],
+        format_func=lambda x: {
+            "all": "All Time",
+            "last_2": "Last 2 Days",
+            "last_7": "Last 7 Days",
+            "last_30": "Last 30 Days",
+            "custom": "Custom Range"
+        }[x],
+        index=1,  # Default to "Last 2 Days"
+        key="global_date_mode"
+    )
+
+    start_date = None
+    end_date = None
+
+    if date_mode == "last_2":
+        start_date = datetime.now() - timedelta(days=2)
+        end_date = datetime.now()
+    elif date_mode == "last_7":
+        start_date = datetime.now() - timedelta(days=7)
+        end_date = datetime.now()
+    elif date_mode == "last_30":
+        start_date = datetime.now() - timedelta(days=30)
+        end_date = datetime.now()
+    elif date_mode == "custom":
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "From",
+                value=datetime.now() - timedelta(days=30),
+                key="global_start_date"
+            )
+        with col2:
+            end_date = st.date_input(
+                "To",
+                value=datetime.now(),
+                key="global_end_date"
+            )
+
+    filters['date_filter'] = {
+        "mode": date_mode,
+        "start_date": start_date,
+        "end_date": end_date
+    }
+
+    st.sidebar.markdown("---")
+
     # Search
     filters['search'] = st.sidebar.text_input(
         "Search",
@@ -695,15 +682,18 @@ def render_sidebar(df):
         help="Search in job title, description, and AI summary"
     )
 
-    # Min Score Slider
-    filters['min_score'] = st.sidebar.slider(
-        "Min Match Score",
+    # Score Range Slider (replaces Min Score)
+    score_range = st.sidebar.slider(
+        "💯 Score Range",
         min_value=0,
         max_value=100,
-        value=0,
+        value=(0, 100),
         step=5,
-        help="Filter jobs by minimum match score (0-100)"
+        key="global_score_range",
+        help="Filter by match score range (0-100)"
     )
+    filters['score_range'] = score_range
+    filters['min_score'] = score_range[0]  # Keep for backward compatibility
 
     # Category dropdown
     all_categories = sorted(set(
@@ -777,33 +767,10 @@ def render_sidebar(df):
 def render_jobs_tab(df, filters):
     """Render the Jobs tab with filtered and sorted job listings."""
 
-    # ── Sidebar Filters ──
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 🔍 Filters")
+    # Apply date and score filters from unified sidebar
+    date_filter = filters.get('date_filter', {"mode": "all", "start_date": None, "end_date": None})
+    score_range = filters.get('score_range', (0, 100))
 
-        # Date range filter
-        date_filter = render_date_filter(filter_type="jobs")
-
-        # Score range filter
-        score_range = st.slider(
-            "💯 Score Range",
-            min_value=0,
-            max_value=100,
-            value=(0, 100),
-            key="jobs_score_filter"
-        )
-
-        # Reset button
-        if st.button("🔄 Reset Filters", key="jobs_reset"):
-            # Reset session state keys
-            if "jobs_date_mode" in st.session_state:
-                st.session_state.jobs_date_mode = "last_2"
-            if "jobs_score_filter" in st.session_state:
-                st.session_state.jobs_score_filter = (0, 100)
-            st.rerun()
-
-    # Apply date and score filters
     df = filter_jobs_by_criteria(df, date_filter, score_range)
 
     # Show filter summary
@@ -1168,41 +1135,16 @@ def render_analytics_tab(df):
 def render_proposals_tab(filters=None):
     """Render the Proposals tab with proposal cards and management UI."""
 
-    # ── Sidebar Filters ──
+    # Proposals-specific Status Filter in sidebar
     with st.sidebar:
         st.markdown("---")
-        st.markdown("### 🔍 Filters")
-
-        # Date range filter
-        date_filter = render_date_filter(filter_type="proposals")
-
-        # Score range filter
-        score_range = st.slider(
-            "💯 Score Range",
-            min_value=0,
-            max_value=100,
-            value=(0, 100),
-            key="proposals_score_filter"
-        )
-
-        # Status filter
         status_filter = st.multiselect(
-            "📊 Status",
+            "📊 Proposal Status",
             options=["pending_review", "approved", "submitted", "rejected"],
             default=["pending_review"],
-            key="proposals_status_filter"
+            key="proposals_status_filter",
+            help="Filter proposals by status"
         )
-
-        # Reset button
-        if st.button("🔄 Reset Filters", key="proposals_reset"):
-            # Reset session state keys
-            if "proposals_date_mode" in st.session_state:
-                st.session_state.proposals_date_mode = "last_2"
-            if "proposals_score_filter" in st.session_state:
-                st.session_state.proposals_score_filter = (0, 100)
-            if "proposals_status_filter" in st.session_state:
-                st.session_state.proposals_status_filter = ["pending_review"]
-            st.rerun()
 
     st.markdown("### ✍️ Proposals")
 
@@ -1275,6 +1217,10 @@ def render_proposals_tab(filters=None):
 
     # Convert to dataframe for easier filtering
     prop_df = pd.DataFrame(proposals)
+
+    # Get date and score filters from unified sidebar
+    date_filter = filters.get('date_filter', {"mode": "all", "start_date": None, "end_date": None}) if filters else {"mode": "all", "start_date": None, "end_date": None}
+    score_range = filters.get('score_range', (0, 100)) if filters else (0, 100)
 
     # Apply date, score, and status filters
     prop_df = filter_proposals_by_criteria(prop_df, date_filter, score_range, status_filter)
