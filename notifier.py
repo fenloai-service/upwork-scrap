@@ -13,10 +13,10 @@ Usage:
     )
 """
 
+import html
 import json
 import os
 import smtplib
-import yaml
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -24,33 +24,17 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 import config
+from config_loader import load_config
+from database.db import get_connection
 
 
 def load_email_config() -> dict:
     """Load email configuration — tries DB first, falls back to YAML."""
-    # Try database first
-    try:
-        from database.db import load_config_from_db
-        db_data = load_config_from_db("email_config")
-        if db_data is not None:
-            return db_data.get('email', db_data)
-    except Exception:
-        pass
-
-    # Fall back to YAML file
-    config_path = config.CONFIG_DIR / "email_config.yaml"
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"Email config not found: {config_path}")
-
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
-
-    return data.get('email', {})
+    return load_config("email_config", top_level_key="email")
 
 
 def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
-    """Generate HTML email body with proposal summaries.
+    """Generate HTML email body with proposal summaries and job details.
 
     Args:
         proposals: List of proposal dicts from database
@@ -63,25 +47,83 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
     proposals_generated = monitor_stats.get('proposals_generated', 0)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # Limit proposals shown in email
+    # Get email config and dashboard URL
     email_cfg = load_email_config()
+    dashboard_url = email_cfg.get('dashboard_url', 'http://localhost:8501')
     max_proposals = email_cfg.get('notifications', {}).get('max_proposals_per_email', 10)
     shown_proposals = proposals[:max_proposals]
     remaining = len(proposals) - len(shown_proposals)
 
-    # Build proposal cards HTML
+    # Fetch job details from database for all proposals
+    conn = get_connection()
+    job_details_map = {}
+    for prop in shown_proposals:
+        job_uid = prop.get('job_uid')
+        if job_uid:
+            row = conn.execute("SELECT * FROM jobs WHERE uid = ?", (job_uid,)).fetchone()
+            if row:
+                job_details_map[job_uid] = dict(row)
+    conn.close()
+
+    # Build proposal cards HTML with job details
     proposal_cards = ""
     for prop in shown_proposals:
         job_uid = prop.get('job_uid', 'unknown')
         match_score = prop.get('match_score', 0)
         proposal_text = prop.get('proposal_text', '')
 
-        # Get job details (would need to query DB, simplified here)
-        job_title = f"Job {job_uid[:8]}"  # Simplified
-        job_url = f"https://www.upwork.com/jobs/{job_uid}"
+        # Get job details from fetched data
+        job = job_details_map.get(job_uid, {})
+        job_title = html.escape(job.get('title', f'Job {job_uid[:8]}'))
+        job_url = job.get('url', f"https://www.upwork.com/jobs/{job_uid}")
+
+        # Job description (truncated)
+        description = job.get('description', '')
+        description_preview = description[:200] + "..." if len(description) > 200 else description
+        description_preview = html.escape(description_preview)
+
+        # Budget/rate info
+        budget_html = ""
+        if job.get('job_type') == 'Hourly':
+            hourly_min = job.get('hourly_rate_min', 0)
+            hourly_max = job.get('hourly_rate_max', 0)
+            if hourly_min or hourly_max:
+                budget_html = f"💰 ${hourly_min:.0f}-${hourly_max:.0f}/hr"
+        else:
+            fixed_price = job.get('fixed_price', 0)
+            if fixed_price:
+                budget_html = f"💰 ${fixed_price:,.0f} fixed"
+
+        # Skills
+        skills_raw = job.get('skills', '')
+        try:
+            skills_list = json.loads(skills_raw) if skills_raw else []
+        except (json.JSONDecodeError, TypeError):
+            skills_list = []
+        skills_html = ""
+        if skills_list:
+            skills_display = skills_list[:5]  # First 5 skills
+            skills_tags = " ".join([f'<span style="background:#e3f2fd;padding:4px 8px;border-radius:4px;font-size:11px;display:inline-block;margin:2px;">{html.escape(s)}</span>' for s in skills_display])
+            skills_html = f'<div style="margin-top:8px;">{skills_tags}</div>'
+
+        # Client info
+        client_html = ""
+        client_country = job.get('client_country', '')
+        client_spent = job.get('client_total_spent', '')
+        client_rating = job.get('client_rating', '')
+        if client_country or client_spent:
+            client_info_parts = []
+            if client_country:
+                client_info_parts.append(f"📍 {html.escape(client_country)}")
+            if client_spent:
+                client_info_parts.append(f"💳 {html.escape(client_spent)} spent")
+            if client_rating:
+                client_info_parts.append(f"⭐ {html.escape(client_rating)}")
+            client_html = f'<div style="margin-top:8px;font-size:12px;color:#666;">{" · ".join(client_info_parts)}</div>'
 
         # Truncate proposal for email
-        proposal_preview = proposal_text[:300] + "..." if len(proposal_text) > 300 else proposal_text
+        proposal_preview = proposal_text[:250] + "..." if len(proposal_text) > 250 else proposal_text
+        proposal_preview = html.escape(proposal_preview)
 
         # Score color
         score_color = "#14a800" if match_score >= 70 else ("#f57c00" if match_score >= 40 else "#9e9e9e")
@@ -89,20 +131,40 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         proposal_cards += f"""
         <div style="border-left: 4px solid {score_color}; padding: 16px; margin-bottom: 20px;
                     background: #f8f9fa; border-radius: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h3 style="margin: 0; font-size: 18px;">
-                    <a href="{job_url}" style="color: #1976d2; text-decoration: none;">{job_title}</a>
-                </h3>
-                <div style="font-size: 24px; font-weight: bold; color: {score_color};">
+            <!-- Header with title and score -->
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                <div style="flex: 1;">
+                    <h3 style="margin: 0 0 6px 0; font-size: 18px;">
+                        <a href="{job_url}" style="color: #1976d2; text-decoration: none;">{job_title}</a>
+                    </h3>
+                    {f'<div style="font-size:13px;color:#666;margin-bottom:4px;">{budget_html}</div>' if budget_html else ''}
+                </div>
+                <div style="font-size: 24px; font-weight: bold; color: {score_color}; margin-left: 12px;">
                     🎯 {match_score:.0f}
                 </div>
             </div>
+
+            <!-- Job description -->
+            {f'<div style="background:#fff;padding:10px;border-radius:6px;font-size:13px;color:#555;margin-bottom:8px;border-left:3px solid #e0e0e0;">{description_preview}</div>' if description_preview else ''}
+
+            <!-- Skills -->
+            {skills_html}
+
+            <!-- Client info -->
+            {client_html}
+
+            <!-- Proposal text -->
             <div style="background: white; padding: 12px; border-radius: 6px; font-family: system-ui;
-                        white-space: pre-wrap; font-size: 14px; color: #333;">
+                        white-space: pre-wrap; font-size: 14px; color: #333; margin-top: 12px; border: 1px solid #e0e0e0;">
+                <strong style="color:#1976d2;">📝 Your Proposal:</strong><br><br>
                 {proposal_preview}
             </div>
-            <div style="margin-top: 8px; font-size: 12px; color: #666;">
-                💡 <a href="http://localhost:8501" style="color: #1976d2;">Open Dashboard to review and submit</a>
+
+            <!-- Action button -->
+            <div style="margin-top: 12px; text-align: center;">
+                <a href="{dashboard_url}" style="display:inline-block;background:#1976d2;color:white;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
+                    Review & Submit in Dashboard →
+                </a>
             </div>
         </div>
         """
@@ -112,12 +174,12 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         <div style="padding: 16px; background: #e3f2fd; border-radius: 8px; text-align: center;">
             <strong>+ {remaining} more proposal(s)</strong>
             <br>
-            <a href="http://localhost:8501" style="color: #1976d2;">View all in Dashboard →</a>
+            <a href="{dashboard_url}" style="color: #1976d2; font-weight: 600; text-decoration: none;">View all in Dashboard →</a>
         </div>
         """
 
     # Full HTML email
-    html = f"""
+    email_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -173,8 +235,8 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
                 <p style="margin: 0; color: #666; font-size: 13px;">
                     Generated by <strong>Upwork Proposal Monitor</strong>
                     <br>
-                    <a href="http://localhost:8501" style="color: #1976d2; text-decoration: none;">
-                        Open Dashboard →
+                    <a href="{dashboard_url}" style="color: #1976d2; text-decoration: none; font-weight: 600;">
+                        🚀 Open Dashboard →
                     </a>
                 </p>
             </div>
@@ -183,7 +245,7 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
     </html>
     """
 
-    return html
+    return email_html
 
 
 def send_via_smtp(subject: str, html_body: str, email_cfg: dict) -> bool:
@@ -240,7 +302,7 @@ def send_via_smtp(subject: str, html_body: str, email_cfg: dict) -> bool:
     except smtplib.SMTPAuthenticationError:
         print("❌ SMTP authentication failed. Check GMAIL_APP_PASSWORD env var.")
         return False
-    except Exception as e:
+    except (smtplib.SMTPException, ConnectionError, TimeoutError, OSError) as e:
         print(f"❌ Failed to send email: {e}")
         return False
 
