@@ -26,8 +26,14 @@ preferences:
     hourly_min: 25
   client_criteria:
     payment_verified: false
-    min_total_spent: 0
-    min_rating: 0
+    min_total_spent: 1000
+    min_rating: 4.5
+  weights:
+    category: 30
+    required_skills: 25
+    nice_to_have_skills: 10
+    budget_fit: 20
+    client_quality: 15
   exclusion_keywords:
   - wordpress
   - shopify

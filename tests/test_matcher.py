@@ -257,3 +257,90 @@ def test_client_quality_new_client():
     # New client with payment verified should get some credit
     client_reason = [r for r in reasons if r['criterion'] == 'client_quality'][0]
     assert client_reason['score'] > 0, "New client with payment verified should get some points"
+
+
+def test_configurable_scoring_weights():
+    """Test that scoring weights can be configured and are properly normalized."""
+    from matcher import score_job
+
+    # Custom weights that don't total 100
+    custom_prefs = {
+        "categories": ["AI Chatbot"],
+        "required_skills": ["Python"],
+        "nice_to_have_skills": ["FastAPI"],
+        "budget": {"fixed_min": 1000, "fixed_max": 5000, "hourly_min": 30},
+        "client_criteria": {"min_total_spent": 1000, "min_rating": 4.0},
+        "exclusion_keywords": [],
+        "weights": {
+            "category": 50,           # Double weight on category
+            "required_skills": 20,
+            "nice_to_have_skills": 10,
+            "budget_fit": 10,
+            "client_quality": 10
+        }
+    }
+
+    job = {
+        "uid": "~test008",
+        "title": "AI Chatbot Project",
+        "description": "Build a chatbot with Python and FastAPI",
+        "categories": '["AI Chatbot"]',
+        "skills": '["Python", "FastAPI"]',
+        "job_type": "Fixed",
+        "fixed_price": 2000.0,
+        "client_total_spent": "$5K+",
+        "client_rating": "4.5 of 5",
+        "client_info_raw": "Payment method verified",
+    }
+
+    score, reasons = score_job(job, custom_prefs)
+
+    # Verify all weights are present
+    assert len(reasons) == 5, "Should have 5 scoring criteria"
+
+    # Verify weights are normalized (category should be 50% of total)
+    category_reason = [r for r in reasons if r['criterion'] == 'category'][0]
+    assert category_reason['weight'] == 50, f"Category weight should be 50, got {category_reason['weight']}"
+
+    # Verify score is in valid range
+    assert 0 <= score <= 100, f"Score {score} should be 0-100"
+
+    # Perfect category match with 50 weight should contribute 50 points
+    assert category_reason['score'] == 1.0, "Perfect category match should score 1.0"
+
+
+def test_default_weights_when_not_configured():
+    """Test that default weights are used when not specified in preferences."""
+    from matcher import score_job
+
+    prefs = {
+        "categories": ["AI"],
+        "required_skills": ["Python"],
+        "nice_to_have_skills": [],
+        "budget": {"fixed_min": 500, "fixed_max": 5000, "hourly_min": 25},
+        "client_criteria": {"min_total_spent": 1000, "min_rating": 4.0},
+        "exclusion_keywords": []
+        # No 'weights' key - should use defaults
+    }
+
+    job = {
+        "uid": "~test009",
+        "title": "AI Project",
+        "categories": '["AI"]',
+        "skills": '["Python"]',
+        "job_type": "Fixed",
+        "fixed_price": 1000.0,
+        "client_total_spent": "$2K+",
+        "client_rating": "4.8 of 5",
+        "client_info_raw": "Payment method verified",
+    }
+
+    score, reasons = score_job(job, prefs)
+
+    # Verify default weights are applied
+    weights_by_criterion = {r['criterion']: r['weight'] for r in reasons}
+    assert weights_by_criterion['category'] == 30, "Default category weight should be 30"
+    assert weights_by_criterion['required_skills'] == 25, "Default required_skills weight should be 25"
+    assert weights_by_criterion['nice_to_have_skills'] == 10, "Default nice_to_have weight should be 10"
+    assert weights_by_criterion['budget_fit'] == 20, "Default budget_fit weight should be 20"
+    assert weights_by_criterion['client_quality'] == 15, "Default client_quality weight should be 15"

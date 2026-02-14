@@ -5,9 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 import config
+from config_loader import load_config, ConfigError
 from database.db import _to_float
 
 
@@ -21,36 +20,14 @@ def load_preferences() -> dict:
         FileNotFoundError: If config file doesn't exist.
         KeyError: If required keys are missing.
     """
-    data = None
-
-    # Try database first
     try:
-        from database.db import load_config_from_db
-        db_data = load_config_from_db("job_preferences")
-        if db_data is not None:
-            data = db_data
-    except Exception:
-        pass
-
-    # Fall back to YAML file
-    if data is None:
-        preferences_path = config.CONFIG_DIR / "job_preferences.yaml"
-
-        if not preferences_path.exists():
-            raise FileNotFoundError(f"Preferences config not found: {preferences_path}")
-
-        with open(preferences_path, "r") as f:
-            data = yaml.safe_load(f)
-
-    # Validate required keys
-    if "preferences" not in data:
-        raise KeyError("Missing 'preferences' key in config")
-
-    prefs = data["preferences"]
-    required_keys = ["categories", "required_skills", "budget", "client_criteria"]
-    missing = [k for k in required_keys if k not in prefs]
-    if missing:
-        raise KeyError(f"Missing required preference keys: {missing}")
+        prefs = load_config(
+            "job_preferences",
+            top_level_key="preferences",
+            required_keys=["categories", "required_skills", "budget", "client_criteria"],
+        )
+    except ConfigError as e:
+        raise KeyError(str(e)) from e
 
     # Check for threshold (accept either "threshold" or "match_threshold")
     if "threshold" not in prefs and "match_threshold" not in prefs:
@@ -255,14 +232,14 @@ def _check_exclusion_keywords(job: dict, prefs: dict) -> bool:
 def score_job(job: dict, preferences: dict) -> tuple[float, list[dict]]:
     """Score a job based on preferences (0-100 scale).
 
-    Formula:
-        match_score = (
-            category_match * 30 +
-            required_skills_match * 25 +
-            nice_skills_match * 10 +
-            budget_fit * 20 +
-            client_quality * 15
-        )
+    Scoring weights are configurable via preferences["weights"]. Default weights:
+        - category: 30
+        - required_skills: 25
+        - nice_to_have_skills: 10
+        - budget_fit: 20
+        - client_quality: 15
+
+    Weights are automatically normalized if they don't total 100.
 
     Args:
         job: Job dictionary from database.
@@ -283,6 +260,31 @@ def score_job(job: dict, preferences: dict) -> tuple[float, list[dict]]:
                 "detail": "Contains exclusion keyword (auto-rejected)"
             }
         ]
+
+    # Load and normalize weights
+    weights_config = preferences.get("weights", {})
+    default_weights = {
+        "category": 30,
+        "required_skills": 25,
+        "nice_to_have_skills": 10,
+        "budget_fit": 20,
+        "client_quality": 15
+    }
+
+    # Get weights with defaults
+    weights = {
+        "category": weights_config.get("category", default_weights["category"]),
+        "required_skills": weights_config.get("required_skills", default_weights["required_skills"]),
+        "nice_to_have_skills": weights_config.get("nice_to_have_skills", default_weights["nice_to_have_skills"]),
+        "budget_fit": weights_config.get("budget_fit", default_weights["budget_fit"]),
+        "client_quality": weights_config.get("client_quality", default_weights["client_quality"])
+    }
+
+    # Normalize weights to total 100
+    total_weight = sum(weights.values())
+    if total_weight != 100 and total_weight > 0:
+        normalization_factor = 100.0 / total_weight
+        weights = {k: v * normalization_factor for k, v in weights.items()}
 
     reasons = []
     total_score = 0.0
@@ -332,13 +334,13 @@ def score_job(job: dict, preferences: dict) -> tuple[float, list[dict]]:
 
     reasons.append({
         "criterion": "category",
-        "weight": 30,
+        "weight": weights["category"],
         "score": category_score,
         "detail": category_detail
     })
-    total_score += category_score * 30
+    total_score += category_score * weights["category"]
 
-    # 2. Required skills match (25 points)
+    # 2. Required skills match
     job_skills_str = job.get("skills", "[]")
     try:
         job_skills = json.loads(job_skills_str) if isinstance(job_skills_str, str) else job_skills_str
@@ -363,13 +365,13 @@ def score_job(job: dict, preferences: dict) -> tuple[float, list[dict]]:
 
     reasons.append({
         "criterion": "required_skills",
-        "weight": 25,
+        "weight": weights["required_skills"],
         "score": req_score,
         "detail": req_detail
     })
-    total_score += req_score * 25
+    total_score += req_score * weights["required_skills"]
 
-    # 3. Nice-to-have skills match (10 points)
+    # 3. Nice-to-have skills match
     nice_skills = [s.lower().strip() for s in preferences.get("nice_to_have_skills", [])]
 
     if nice_skills:
@@ -385,31 +387,31 @@ def score_job(job: dict, preferences: dict) -> tuple[float, list[dict]]:
 
     reasons.append({
         "criterion": "nice_to_have_skills",
-        "weight": 10,
+        "weight": weights["nice_to_have_skills"],
         "score": nice_score,
         "detail": nice_detail
     })
-    total_score += nice_score * 10
+    total_score += nice_score * weights["nice_to_have_skills"]
 
-    # 4. Budget fit (20 points)
+    # 4. Budget fit
     budget_score, budget_detail = _calculate_budget_fit(job, preferences)
     reasons.append({
         "criterion": "budget_fit",
-        "weight": 20,
+        "weight": weights["budget_fit"],
         "score": budget_score,
         "detail": budget_detail
     })
-    total_score += budget_score * 20
+    total_score += budget_score * weights["budget_fit"]
 
-    # 5. Client quality (15 points)
+    # 5. Client quality
     client_score, client_detail = _calculate_client_quality(job, preferences)
     reasons.append({
         "criterion": "client_quality",
-        "weight": 15,
+        "weight": weights["client_quality"],
         "score": client_score,
         "detail": client_detail
     })
-    total_score += client_score * 15
+    total_score += client_score * weights["client_quality"]
 
     return total_score, reasons
 

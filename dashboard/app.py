@@ -17,7 +17,7 @@ import streamlit as st
 try:
     if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
         os.environ["DATABASE_URL"] = st.secrets["DATABASE_URL"]
-except Exception:
+except (AttributeError, KeyError):
     pass  # Not running on Streamlit Cloud or secrets not configured
 
 import pandas as pd
@@ -54,6 +54,7 @@ from database.db import (
     update_proposal_rating,
     get_proposal_analytics,
     get_proposal_stats,
+    save_setting,
 )
 from dashboard.analytics import (
     jobs_to_dataframe,
@@ -156,7 +157,7 @@ def is_read_only_mode():
     try:
         if hasattr(st, 'secrets') and 'deployment' in st.secrets:
             return st.secrets['deployment'].get('read_only', False)
-    except Exception:
+    except (AttributeError, KeyError):
         pass
 
     return False
@@ -167,7 +168,7 @@ def should_show_approved_only():
     try:
         if hasattr(st, 'secrets') and 'deployment' in st.secrets:
             return st.secrets['deployment'].get('show_approved_only', False)
-    except Exception:
+    except (AttributeError, KeyError):
         pass
 
     return False
@@ -178,7 +179,7 @@ def load_proposals_data():
     """Load proposals data with caching."""
     try:
         return get_proposals()
-    except Exception:
+    except (OSError, KeyError):
         return []
 
 
@@ -202,7 +203,7 @@ def load_jobs_data():
         preferences = load_preferences()
         df['score'] = df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
         df['match_reasons'] = df.apply(lambda row: get_match_reasons(row.to_dict(), preferences), axis=1)
-    except Exception as e:
+    except (KeyError, ValueError, FileNotFoundError, TypeError) as e:
         # Fallback to simple scoring if matcher fails
         st.warning(f"Using fallback scoring (matcher error: {e})")
         df['score'] = df.apply(lambda row: score_job_fallback(row), axis=1)
@@ -219,7 +220,7 @@ def score_job_unified(job_dict: dict, preferences: dict) -> float:
     try:
         score, reasons = matcher_score_job(job_dict, preferences)
         return score
-    except Exception:
+    except (KeyError, ValueError, TypeError):
         return score_job_fallback(job_dict)
 
 
@@ -228,7 +229,7 @@ def get_match_reasons(job_dict: dict, preferences: dict) -> list:
     try:
         score, reasons = matcher_score_job(job_dict, preferences)
         return reasons
-    except Exception:
+    except (KeyError, ValueError, TypeError):
         return []
 
 
@@ -434,7 +435,7 @@ def load_monitor_health():
     try:
         with open(status_file) as f:
             return json.load(f)
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
@@ -992,7 +993,7 @@ def render_proposals_tab(filters=None):
                 st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
-    except Exception as e:
+    except (KeyError, ValueError, TypeError, OSError) as e:
         st.warning(f"Could not load proposal analytics: {e}")
         log.warning(f"Failed to load proposal analytics: {e}")
 
@@ -1009,7 +1010,7 @@ def render_proposals_tab(filters=None):
             else:
                 st.info("No proposals generated yet. Run the monitor pipeline to generate proposals:")
                 st.code("python main.py monitor --new")
-        except Exception:
+        except (OSError, KeyError):
             st.info("No proposals generated yet. Run the monitor pipeline to generate proposals:")
             st.code("python main.py monitor --new")
         return
@@ -1492,7 +1493,7 @@ def render_favorites_tab():
     try:
         preferences = load_preferences()
         fav_df['score'] = fav_df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
-    except Exception:
+    except (KeyError, ValueError, FileNotFoundError, TypeError):
         fav_df['score'] = fav_df.apply(lambda row: score_job_fallback(row.to_dict()), axis=1)
 
     # Stats
@@ -1959,6 +1960,91 @@ def render_profile_proposals_tab():
     with col3:
         hourly_min = st.number_input("Hourly Min ($)", min_value=0, value=budget.get("hourly_min", 25), key="pref_hmin")
 
+    # ── Client Criteria ──────────────────────────────────────────────────────
+    st.markdown("**Client Quality Criteria**")
+    client_criteria = preferences.get("client_criteria", {})
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        min_spent = st.number_input(
+            "Min Total Spent ($)",
+            min_value=0,
+            value=client_criteria.get("min_total_spent", 1000),
+            key="pref_client_spent",
+            help="Minimum client spending history (e.g., 1000 = $1K+)"
+        )
+    with col2:
+        min_rating = st.number_input(
+            "Min Client Rating",
+            min_value=0.0,
+            max_value=5.0,
+            value=float(client_criteria.get("min_rating", 4.5)),
+            step=0.1,
+            key="pref_client_rating",
+            help="Minimum client rating (0-5 scale)"
+        )
+    with col3:
+        payment_verified = st.checkbox(
+            "Require Payment Verified",
+            value=client_criteria.get("payment_verified", False),
+            key="pref_client_verified",
+            help="Only match jobs from clients with verified payment methods"
+        )
+
+    # ── Scoring Weights ──────────────────────────────────────────────────────
+    st.markdown("**Scoring Weights** (must total 100)")
+    weights = preferences.get("weights", {})
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        weight_category = st.number_input(
+            "Category (%)",
+            min_value=0,
+            max_value=100,
+            value=weights.get("category", 30),
+            key="weight_cat",
+            help="Weight for category match"
+        )
+    with col2:
+        weight_req_skills = st.number_input(
+            "Required Skills (%)",
+            min_value=0,
+            max_value=100,
+            value=weights.get("required_skills", 25),
+            key="weight_req",
+            help="Weight for required skills match"
+        )
+    with col3:
+        weight_nice_skills = st.number_input(
+            "Nice Skills (%)",
+            min_value=0,
+            max_value=100,
+            value=weights.get("nice_to_have_skills", 10),
+            key="weight_nice",
+            help="Weight for nice-to-have skills"
+        )
+    with col4:
+        weight_budget = st.number_input(
+            "Budget Fit (%)",
+            min_value=0,
+            max_value=100,
+            value=weights.get("budget_fit", 20),
+            key="weight_budget",
+            help="Weight for budget fit"
+        )
+    with col5:
+        weight_client = st.number_input(
+            "Client Quality (%)",
+            min_value=0,
+            max_value=100,
+            value=weights.get("client_quality", 15),
+            key="weight_client",
+            help="Weight for client quality"
+        )
+
+    total_weight = weight_category + weight_req_skills + weight_nice_skills + weight_budget + weight_client
+    if total_weight != 100:
+        st.warning(f"⚠️ Weights total {total_weight}% (should be 100%). Scoring will be normalized.")
+
     threshold = st.slider("Match Threshold", 0, 100, value=preferences.get("threshold", 50), key="pref_thresh")
 
     exclusions = st.text_area(
@@ -1968,6 +2054,12 @@ def render_profile_proposals_tab():
         key="pref_excl"
     )
 
+    # Save button with DB-first approach
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        save_to_db = st.checkbox("Save to Database", value=True, key="pref_save_db",
+                                 help="Store in database (recommended). Uncheck to save to YAML only.")
+
     if st.button("Save Job Preferences", key="save_prefs"):
         new_prefs = {
             "preferences": {
@@ -1975,16 +2067,46 @@ def render_profile_proposals_tab():
                 "required_skills": [s.strip() for s in req_skills.split("\n") if s.strip()],
                 "nice_to_have_skills": [s.strip() for s in nice_skills.split("\n") if s.strip()],
                 "budget": {"fixed_min": fixed_min, "fixed_max": fixed_max, "hourly_min": hourly_min},
-                "client_criteria": preferences.get("client_criteria", {}),
+                "client_criteria": {
+                    "min_total_spent": min_spent,
+                    "min_rating": min_rating,
+                    "payment_verified": payment_verified
+                },
+                "weights": {
+                    "category": weight_category,
+                    "required_skills": weight_req_skills,
+                    "nice_to_have_skills": weight_nice_skills,
+                    "budget_fit": weight_budget,
+                    "client_quality": weight_client
+                },
                 "exclusion_keywords": [s.strip() for s in exclusions.split("\n") if s.strip()],
                 "threshold": threshold,
             }
         }
+
+        success = False
+
+        # Save to database first (if enabled)
+        if save_to_db:
+            try:
+                from database.db import save_setting
+                save_setting("job_preferences", new_prefs)
+                success = True
+                st.success("✅ Job preferences saved to database!")
+            except (OSError, KeyError) as e:
+                st.error(f"Failed to save to database: {e}")
+
+        # Also save to YAML as fallback
         if save_yaml_config("job_preferences.yaml", new_prefs):
-            st.success("Job preferences saved!")
-            st.cache_data.clear()
+            if not save_to_db:
+                success = True
+                st.success("✅ Job preferences saved to YAML!")
         else:
-            st.error("Failed to save job preferences")
+            if not success:
+                st.error("Failed to save job preferences")
+
+        if success:
+            st.cache_data.clear()
 
     st.markdown("---")
 
@@ -2069,7 +2191,7 @@ def main():
     try:
         proposal_stats = get_proposal_stats()
         pending_proposals = proposal_stats.get('pending_review', 0)
-    except Exception as e:
+    except (OSError, KeyError) as e:
         log.error(f"Failed to load proposal stats for tab count: {e}")
         pending_proposals = 0
     proposals_label = f"✍️ Proposals ({pending_proposals})" if pending_proposals > 0 else "✍️ Proposals"
