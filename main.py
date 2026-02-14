@@ -19,11 +19,17 @@ import argparse
 import logging
 import json
 import os
+import smtplib
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
+# Load environment variables from .env file
+load_dotenv()
 
 import config
 from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count, get_all_job_uids
@@ -269,7 +275,7 @@ def cmd_health():
         count = get_job_count()
         results['database'] = {'status': 'ok', 'jobs': count}
         print(f"\n  Database: OK ({count} jobs)")
-    except Exception as e:
+    except (OSError, sqlite3.Error) as e:
         results['database'] = {'status': 'error', 'message': str(e)}
         print(f"\n  Database: FAILED - {e}")
 
@@ -287,7 +293,7 @@ def cmd_health():
             else:
                 results[f'ai_{name}'] = {'status': 'error', 'message': health['message']}
                 print(f"  AI ({name}): FAILED - {health['message']}")
-    except Exception as e:
+    except (ConnectionError, TimeoutError, FileNotFoundError, KeyError, OSError) as e:
         results['ai'] = {'status': 'error', 'message': str(e)}
         print(f"  AI providers: FAILED - {e}")
 
@@ -301,7 +307,7 @@ def cmd_health():
             if usage['warning']:
                 status_icon = "WARNING"
             print(f"  API usage ({provider}): {status_icon} - {usage['used']:,}/{usage['limit']:,} tokens ({usage['percentage']:.1f}%)")
-    except Exception as e:
+    except (ImportError, sqlite3.Error, OSError) as e:
         results['usage'] = {'status': 'error', 'message': str(e)}
         print(f"  API usage: FAILED - {e}")
 
@@ -407,21 +413,8 @@ def release_lock():
 def write_health_check(status: str, duration_seconds: float, jobs_scraped: int = 0,
                        jobs_new: int = 0, jobs_classified: int = 0, jobs_matched: int = 0,
                        proposals_generated: int = 0, proposals_failed: int = 0,
-                       error_message: str = None):
-    """
-    Write health check status to last_run_status.json.
-
-    Args:
-        status: "success", "partial_failure", or "failure"
-        duration_seconds: Total pipeline duration
-        jobs_scraped: Total jobs scraped
-        jobs_new: New jobs added to DB
-        jobs_classified: Jobs classified
-        jobs_matched: Jobs that matched preferences
-        proposals_generated: Proposals successfully generated
-        proposals_failed: Proposals that failed to generate
-        error_message: Error message if status is failure or partial_failure
-    """
+                       error_message: str = None, stages_completed: list = None):
+    """Write health check status to last_run_status.json."""
     health_data = {
         "status": status,
         "timestamp": datetime.now().isoformat(),
@@ -432,7 +425,8 @@ def write_health_check(status: str, duration_seconds: float, jobs_scraped: int =
         "jobs_matched": jobs_matched,
         "proposals_generated": proposals_generated,
         "proposals_failed": proposals_failed,
-        "error": error_message
+        "error": error_message,
+        "stages_completed": stages_completed or [],
     }
 
     with open(LAST_RUN_STATUS_FILE, "w") as f:
@@ -459,290 +453,301 @@ def setup_monitor_logging():
     log.info("Monitor pipeline started")
 
 
-async def cmd_monitor_new(dry_run: bool = False):
+
+async def _stage_scrape(existing_uids: set) -> tuple[int, int, set]:
+    """Stage 1: Scrape new jobs (page 1-2 per keyword).
+
+    Returns:
+        Tuple of (jobs_scraped, jobs_new, scraped_uids).
     """
-    Monitor pipeline: scrape → classify → match → generate proposals.
+    print("\n[1/5] Scraping new jobs (page 1-2 per keyword)...")
+    log.info("Stage 1: Scraping started")
+    log.info(f"Existing jobs in DB: {len(existing_uids)}")
 
-    Pipeline stages:
-    1. Scrape new jobs (page 1-2 per keyword)
-    2. Delta detection (find truly new jobs)
-    3. Classify new jobs with AI
-    4. Match jobs against preferences
-    5. Generate proposals for matched jobs
-
-    Args:
-        dry_run: If True, skip API calls (classification and proposal generation)
-    """
-    start_time = time.time()
-
-    # Setup
-    init_db()
-    setup_monitor_logging()
-
-    # Acquire lock
-    if not acquire_lock():
-        return  # Already running
-
-    # Initialize counters for health check
     jobs_scraped = 0
     jobs_new = 0
-    jobs_classified = 0
-    jobs_matched = 0
-    proposals_generated = 0
-    proposals_failed = 0
-    error_message = None
-    status = "success"
+    scraped_uids = set()
+
+    async with async_playwright() as pw:
+        browser, _ = await launch_chrome_and_connect(pw)
+        page = await get_page(browser)
+        try:
+            await warmup_cloudflare(page)
+            scrape_known_uids = set(existing_uids) if config.DUPLICATE_SKIP_ENABLED else None
+
+            for i, keyword in enumerate(config.KEYWORDS):
+                print(f"  [{i+1}/{len(config.KEYWORDS)}] Scraping: '{keyword}'")
+                jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=scrape_known_uids)
+
+                if jobs:
+                    scraped_uids.update(job["uid"] for job in jobs)
+                    inserted, updated = upsert_jobs(jobs)
+                    jobs_scraped += len(jobs)
+                    jobs_new += inserted
+                    print(f"     -> +{inserted} new, {updated} updated")
+
+                # Memory cleanup every 5 keywords
+                if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
+                    print(f"     Memory cleanup (processed {i+1} keywords)...")
+                    await page.close()
+                    import gc
+                    gc.collect()
+                    await asyncio.sleep(2)
+                    page = await get_page(browser)
+                    await warmup_cloudflare(page)
+                elif i < len(config.KEYWORDS) - 1:
+                    await human_delay(6, 12)
+        finally:
+            await browser.close()
+
+    print(f"  Scraped {jobs_scraped} jobs, {jobs_new} new")
+    log.info(f"Stage 1 complete: {jobs_scraped} scraped, {jobs_new} new")
+    return jobs_scraped, jobs_new, scraped_uids
+
+
+def _stage_classify(new_uids: set, dry_run: bool) -> tuple[int, str | None]:
+    """Stage 3: Classify new jobs with AI.
+
+    Returns:
+        Tuple of (jobs_classified, error_message_or_None).
+    """
+    print(f"\n[3/5] Classifying {len(new_uids)} new jobs...")
+    log.info("Stage 3: Classification started")
+
+    if dry_run:
+        print("  DRY RUN - Skipping classification")
+        return 0, None
 
     try:
-        print("\n" + "="*70)
-        print("🤖 MONITOR PIPELINE" + (" (DRY RUN)" if dry_run else ""))
-        print("="*70)
+        from classifier.ai import classify_all
+        classify_all()
+        count = len(new_uids)
+        print(f"  Classified {count} jobs")
+        log.info(f"Stage 3 complete: {count} jobs classified")
+        return count, None
+    except (ConnectionError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        log.error(f"Classification failed: {e}")
+        print(f"  Classification failed: {e}")
+        return 0, f"Classification error: {e}"
 
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 1: Scrape new jobs
-        # ──────────────────────────────────────────────────────────────────────
-        print("\n[1/5] 📡 Scraping new jobs (page 1-2 per keyword)...")
-        log.info("Stage 1: Scraping started")
 
-        # Get current job UIDs before scraping
-        existing_uids = get_all_job_uids()
-        log.info(f"Existing jobs in DB: {len(existing_uids)}")
+def _stage_match(new_uids: set) -> tuple[list, str | None]:
+    """Stage 4: Match jobs against preferences.
 
-        # Scrape
-        scraped_uids = set()
-        async with async_playwright() as pw:
-            browser, _ = await launch_chrome_and_connect(pw)
-            page = await get_page(browser)
-            try:
-                await warmup_cloudflare(page)
+    Returns:
+        Tuple of (matched_jobs_list, error_message_or_None).
+    """
+    print(f"\n[4/5] Matching jobs against preferences...")
+    log.info("Stage 4: Matching started")
 
-                # Use existing_uids for duplicate skipping during scrape
-                scrape_known_uids = set(existing_uids) if config.DUPLICATE_SKIP_ENABLED else None
+    try:
+        from matcher import get_matching_jobs, load_preferences
 
-                for i, keyword in enumerate(config.KEYWORDS):
-                    print(f"  [{i+1}/{len(config.KEYWORDS)}] Scraping: '{keyword}'")
-                    jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=scrape_known_uids)
+        all_jobs = get_all_jobs()
+        new_jobs = [job for job in all_jobs if job["uid"] in new_uids]
+        preferences = load_preferences()
+        matched_jobs = get_matching_jobs(new_jobs, preferences)
 
-                    if jobs:
-                        # Track UIDs from this scrape
-                        scraped_uids.update(job["uid"] for job in jobs)
+        print(f"  {len(matched_jobs)} jobs matched (threshold: {preferences.get('threshold', 70)})")
+        log.info(f"Stage 4 complete: {len(matched_jobs)} jobs matched")
 
-                        # Save to DB
-                        inserted, updated = upsert_jobs(jobs)
-                        jobs_scraped += len(jobs)
-                        jobs_new += inserted
-                        print(f"     → +{inserted} new, {updated} updated")
-
-                    # Memory cleanup every 5 keywords to prevent OOM
-                    if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
-                        print(f"     🧹 Memory cleanup (processed {i+1} keywords)...")
-                        await page.close()
-                        import gc
-                        gc.collect()
-                        await asyncio.sleep(2)  # Let resources be released
-                        page = await get_page(browser)
-                        await warmup_cloudflare(page)
-                    elif i < len(config.KEYWORDS) - 1:
-                        await human_delay(6, 12)
-            finally:
-                await browser.close()
-
-        print(f"  ✅ Scraped {jobs_scraped} jobs, {jobs_new} new")
-        log.info(f"Stage 1 complete: {jobs_scraped} scraped, {jobs_new} new")
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 2: Delta detection
-        # ──────────────────────────────────────────────────────────────────────
-        print("\n[2/5] 🔍 Detecting new jobs...")
-        log.info("Stage 2: Delta detection")
-
-        # Find truly new UIDs (scraped but not in existing DB)
-        new_uids = scraped_uids - existing_uids
-        print(f"  ✅ Found {len(new_uids)} truly new jobs")
-        log.info(f"Stage 2 complete: {len(new_uids)} new jobs identified")
-
-        if not new_uids:
-            print("\n⏭️  No new jobs to process. Pipeline complete.")
-            duration = time.time() - start_time
-            write_health_check("success", duration, jobs_scraped, jobs_new, 0, 0, 0, 0)
-            return
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 3: Classify new jobs
-        # ──────────────────────────────────────────────────────────────────────
-        print(f"\n[3/5] 🏷️  Classifying {len(new_uids)} new jobs...")
-        log.info("Stage 3: Classification started")
-
-        if dry_run:
-            print("  ⏭️  DRY RUN - Skipping classification")
-            jobs_classified = 0
-        else:
-            try:
-                from classifier.ai import classify_all
-                # classify_all() runs on all unclassified jobs, which includes our new ones
-                classify_all()
-                jobs_classified = len(new_uids)  # Assume all classified successfully
-                print(f"  ✅ Classified {jobs_classified} jobs")
-                log.info(f"Stage 3 complete: {jobs_classified} jobs classified")
-            except Exception as e:
-                log.error(f"Classification failed: {e}")
-                print(f"  ❌ Classification failed: {e}")
-                error_message = f"Classification error: {e}"
-                status = "partial_failure"
-                jobs_classified = 0
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 4: Match jobs
-        # ──────────────────────────────────────────────────────────────────────
-        print(f"\n[4/5] 🎯 Matching jobs against preferences...")
-        log.info("Stage 4: Matching started")
-
-        try:
-            from matcher import get_matching_jobs, load_preferences
-
-            # Get all jobs (we need full job data for matching)
-            all_jobs = get_all_jobs()
-            new_jobs = [job for job in all_jobs if job["uid"] in new_uids]
-
-            # Load preferences and match
-            preferences = load_preferences()
-            matched_jobs = get_matching_jobs(new_jobs, preferences)
-            jobs_matched = len(matched_jobs)
-
-            print(f"  ✅ {jobs_matched} jobs matched (threshold: {preferences.get('threshold', 70)})")
-            log.info(f"Stage 4 complete: {jobs_matched} jobs matched")
-
-            if matched_jobs:
-                print("\n  Top matches:")
-                for i, job in enumerate(matched_jobs[:5], 1):
-                    score = job.get("match_score", 0)
-                    title = job.get("title", "")[:60]
-                    print(f"    {i}. [{score:.1f}] {title}")
-
-        except Exception as e:
-            log.error(f"Matching failed: {e}")
-            print(f"  ❌ Matching failed: {e}")
-            error_message = f"Matching error: {e}"
-            status = "failure"
-            duration = time.time() - start_time
-            write_health_check(status, duration, jobs_scraped, jobs_new,
-                             jobs_classified, 0, 0, 0, error_message)
-            return
-
-        if not matched_jobs:
-            print("\n⏭️  No jobs matched preferences. Pipeline complete.")
-            duration = time.time() - start_time
-            write_health_check("success", duration, jobs_scraped, jobs_new,
-                             jobs_classified, jobs_matched, 0, 0)
-            return
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 5: Generate proposals
-        # ──────────────────────────────────────────────────────────────────────
-        print(f"\n[5/5] ✍️  Generating proposals for {jobs_matched} matched jobs...")
-        log.info("Stage 5: Proposal generation started")
-
-        if dry_run:
-            print("  ⏭️  DRY RUN - Skipping proposal generation")
-            print("\n  Would generate proposals for:")
-            for i, job in enumerate(matched_jobs[:10], 1):
+        if matched_jobs:
+            print("\n  Top matches:")
+            for i, job in enumerate(matched_jobs[:5], 1):
                 score = job.get("match_score", 0)
                 title = job.get("title", "")[:60]
                 print(f"    {i}. [{score:.1f}] {title}")
+
+        return matched_jobs, None
+    except (KeyError, FileNotFoundError, ValueError, TypeError) as e:
+        log.error(f"Matching failed: {e}")
+        print(f"  Matching failed: {e}")
+        return [], f"Matching error: {e}"
+
+
+def _stage_generate_proposals(matched_jobs: list, dry_run: bool) -> tuple[int, int, str | None]:
+    """Stage 5: Generate proposals for matched jobs.
+
+    Returns:
+        Tuple of (proposals_generated, proposals_failed, error_message_or_None).
+    """
+    print(f"\n[5/5] Generating proposals for {len(matched_jobs)} matched jobs...")
+    log.info("Stage 5: Proposal generation started")
+
+    if dry_run:
+        print("  DRY RUN - Skipping proposal generation")
+        print("\n  Would generate proposals for:")
+        for i, job in enumerate(matched_jobs[:10], 1):
+            score = job.get("match_score", 0)
+            title = job.get("title", "")[:60]
+            print(f"    {i}. [{score:.1f}] {title}")
+        return 0, 0, None
+
+    try:
+        from proposal_generator import generate_proposals_batch
+        results = generate_proposals_batch(matched_jobs, dry_run=False)
+        generated = results.get("generated", 0)
+        failed = results.get("failed", 0)
+
+        print(f"  Generated {generated} proposals")
+        if failed > 0:
+            print(f"  {failed} proposals failed")
+        log.info(f"Stage 5 complete: {generated} generated, {failed} failed")
+
+        err = f"{failed} proposals failed to generate" if failed > 0 else None
+        return generated, failed, err
+    except (ConnectionError, TimeoutError, IOError, ValueError, OSError) as e:
+        log.error(f"Proposal generation failed: {e}")
+        print(f"  Proposal generation failed: {e}")
+        return 0, 0, f"Proposal generation error: {e}"
+
+
+def _stage_notify(stats: dict, start_time: float):
+    """Stage 6: Send email notification."""
+    print(f"\n[6/6] Sending email notification...")
+    log.info("Stage 6: Email notification")
+
+    try:
+        from notifier import send_notification
+        from database.db import get_proposals
+
+        all_proposals = get_proposals()
+        recent_proposals = [p for p in all_proposals if p.get('status') == 'pending_review']
+
+        monitor_stats = {
+            'jobs_matched': stats['jobs_matched'],
+            'proposals_generated': stats['proposals_generated'],
+            'proposals_failed': stats['proposals_failed'],
+            'timestamp': datetime.now().isoformat(),
+            'duration_seconds': time.time() - start_time,
+        }
+
+        email_sent = send_notification(recent_proposals, monitor_stats, dry_run=False)
+        if email_sent:
+            print(f"  Email notification sent/saved")
         else:
-            try:
-                from proposal_generator import generate_proposals_batch
+            print(f"  Email notification failed (non-critical)")
+        log.info(f"Stage 6 complete: notification {'sent' if email_sent else 'failed'}")
 
-                # Generate proposals
-                results = generate_proposals_batch(matched_jobs, dry_run=False)
-                proposals_generated = results.get("generated", 0)
-                proposals_failed = results.get("failed", 0)
+    except (smtplib.SMTPException, ConnectionError, OSError, IOError) as e:
+        log.warning(f"Email notification failed (non-critical): {e}")
+        print(f"  Email notification failed: {e}")
 
-                print(f"  ✅ Generated {proposals_generated} proposals")
-                if proposals_failed > 0:
-                    print(f"  ⚠️  {proposals_failed} proposals failed")
-                    status = "partial_failure"
-                    error_message = f"{proposals_failed} proposals failed to generate"
+async def cmd_monitor_new(dry_run: bool = False):
+    """Monitor pipeline: scrape -> classify -> match -> generate -> notify.
 
-                log.info(f"Stage 5 complete: {proposals_generated} generated, {proposals_failed} failed")
+    Args:
+        dry_run: If True, skip API calls (classification and proposal generation).
+    """
+    start_time = time.time()
+    init_db()
+    setup_monitor_logging()
 
-            except Exception as e:
-                log.error(f"Proposal generation failed: {e}")
-                print(f"  ❌ Proposal generation failed: {e}")
-                error_message = f"Proposal generation error: {e}"
-                status = "failure"
+    if not acquire_lock():
+        return
 
-        # ──────────────────────────────────────────────────────────────────────
-        # Stage 6: Send email notification (if proposals were generated)
-        # ──────────────────────────────────────────────────────────────────────
-        if not dry_run and proposals_generated > 0:
-            print(f"\n[6/6] 📧 Sending email notification...")
-            log.info("Stage 6: Email notification")
+    stats = {
+        "jobs_scraped": 0, "jobs_new": 0, "jobs_classified": 0,
+        "jobs_matched": 0, "proposals_generated": 0, "proposals_failed": 0,
+    }
+    stages_completed = []
+    status = "success"
+    error_message = None
 
-            try:
-                from notifier import send_notification
-                from database.db import get_proposals
-
-                # Get recently generated proposals (from this run)
-                all_proposals = get_proposals()
-                # Filter to only pending proposals (newly generated)
-                recent_proposals = [p for p in all_proposals if p.get('status') == 'pending_review']
-
-                # Build monitor stats for email
-                monitor_stats = {
-                    'jobs_matched': jobs_matched,
-                    'proposals_generated': proposals_generated,
-                    'proposals_failed': proposals_failed,
-                    'timestamp': datetime.now().isoformat(),
-                    'duration_seconds': time.time() - start_time
-                }
-
-                # Send notification
-                email_sent = send_notification(recent_proposals, monitor_stats, dry_run=False)
-
-                if email_sent:
-                    print(f"  ✅ Email notification sent/saved")
-                else:
-                    print(f"  ⚠️  Email notification failed (non-critical)")
-
-                log.info(f"Stage 6 complete: notification {'sent' if email_sent else 'failed'}")
-
-            except Exception as e:
-                # Email failure is non-critical, don't fail the pipeline
-                log.warning(f"Email notification failed (non-critical): {e}")
-                print(f"  ⚠️  Email notification failed: {e}")
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Pipeline complete
-        # ──────────────────────────────────────────────────────────────────────
-        duration = time.time() - start_time
-
+    try:
         print("\n" + "="*70)
-        print("✅ PIPELINE COMPLETE" + (" (DRY RUN)" if dry_run else ""))
-        print(f"   Duration: {duration:.1f}s")
-        print(f"   Scraped: {jobs_scraped} jobs ({jobs_new} new)")
-        print(f"   Classified: {jobs_classified} jobs")
-        print(f"   Matched: {jobs_matched} jobs")
-        if not dry_run:
-            print(f"   Proposals: {proposals_generated} generated, {proposals_failed} failed")
-        print("="*70 + "\n")
+        print("MONITOR PIPELINE" + (" (DRY RUN)" if dry_run else ""))
+        print("="*70)
 
+        # Stage 1: Scrape
+        existing_uids = get_all_job_uids()
+        scraped, new, scraped_uids = await _stage_scrape(existing_uids)
+        stats["jobs_scraped"], stats["jobs_new"] = scraped, new
+        stages_completed.append("scrape")
+
+        # Stage 2: Delta detection
+        new_uids = scraped_uids - existing_uids
+        print(f"\n[2/5] Detecting new jobs...")
+        print(f"  Found {len(new_uids)} truly new jobs")
+        stages_completed.append("delta")
+
+        if not new_uids:
+            print("\nNo new jobs to process. Pipeline complete.")
+            return
+
+        # Stage 2.5: Date filtering (before classification to save API calls)
+        from matcher import filter_jobs_by_date
+        from config_loader import load_config
+        prefs = load_config("job_preferences", top_level_key="preferences", default={})
+        max_age_days = prefs.get("max_job_age_days", 0)
+
+        if max_age_days > 0:
+            new_jobs = [j for j in get_all_jobs() if j["uid"] in new_uids]
+            filtered_jobs, filtered_out = filter_jobs_by_date(new_jobs, max_age_days)
+            new_uids = {j["uid"] for j in filtered_jobs}
+
+            if filtered_out > 0:
+                print(f"  ℹ Filtered out {filtered_out} jobs older than {max_age_days} day(s)")
+                print(f"  → {len(new_uids)} jobs remaining for classification")
+
+            if not new_uids:
+                print(f"\nAll new jobs filtered out (older than {max_age_days} day(s)). Pipeline complete.")
+                return
+
+        # Stage 3: Classify
+        classified, err = _stage_classify(new_uids, dry_run)
+        stats["jobs_classified"] = classified
+        stages_completed.append("classify")
+        if err:
+            error_message, status = err, "partial_failure"
+
+        # Stage 4: Match
+        matched_jobs, match_err = _stage_match(new_uids)
+        stats["jobs_matched"] = len(matched_jobs)
+        stages_completed.append("match")
+        if match_err:
+            error_message, status = match_err, "failure"
+            return
+
+        if not matched_jobs:
+            print("\nNo jobs matched preferences. Pipeline complete.")
+            return
+
+        # Stage 5: Generate proposals
+        generated, failed, gen_err = _stage_generate_proposals(matched_jobs, dry_run)
+        stats["proposals_generated"], stats["proposals_failed"] = generated, failed
+        stages_completed.append("generate")
+        if gen_err:
+            error_message = gen_err
+            status = "failure" if generated == 0 else "partial_failure"
+
+        # Stage 6: Notify
+        if not dry_run and generated > 0:
+            _stage_notify(stats, start_time)
+            stages_completed.append("notify")
+
+        # Summary
+        duration = time.time() - start_time
+        print("\n" + "="*70)
+        print("PIPELINE COMPLETE" + (" (DRY RUN)" if dry_run else ""))
+        print(f"   Duration: {duration:.1f}s | Scraped: {stats['jobs_scraped']} ({stats['jobs_new']} new)")
+        print(f"   Classified: {stats['jobs_classified']} | Matched: {stats['jobs_matched']}")
+        if not dry_run:
+            print(f"   Proposals: {generated} generated, {failed} failed")
+        print("="*70 + "\n")
         log.info(f"Pipeline complete: {status} in {duration:.1f}s")
 
     except Exception as e:
-        # Unhandled exception - mark as failure
-        log.error(f"Pipeline failed with unhandled exception: {e}", exc_info=True)
-        print(f"\n❌ Pipeline failed: {e}")
-        status = "failure"
-        error_message = str(e)
-        duration = time.time() - start_time
+        # Unhandled exception - mark as failure (top-level catch-all, intentionally broad)
+        log.exception(f"Pipeline failed with unhandled exception: {e}")
+        print(f"\nPipeline failed: {e}")
+        status, error_message = "failure", str(e)
 
     finally:
-        # Always write health check and release lock
         duration = time.time() - start_time
-        write_health_check(status, duration, jobs_scraped, jobs_new,
-                         jobs_classified, jobs_matched, proposals_generated,
-                         proposals_failed, error_message)
+        write_health_check(status, duration, **stats,
+                         error_message=error_message,
+                         stages_completed=stages_completed)
         release_lock()
 
 
