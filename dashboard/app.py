@@ -2047,6 +2047,31 @@ def render_profile_proposals_tab():
 
     threshold = st.slider("Match Threshold", 0, 100, value=preferences.get("threshold", 50), key="pref_thresh")
 
+    # ── Date Filter ──────────────────────────────────────────────────────────
+    st.markdown("**Job Age Filter**")
+    col1, col2 = st.columns([2, 2])
+    with col1:
+        max_job_age_days = st.number_input(
+            "Max Job Age (days)",
+            min_value=0,
+            max_value=365,
+            value=preferences.get("max_job_age_days", 7),
+            key="pref_max_age",
+            help="Only process jobs posted within last N days. 0 = no filter (process all jobs)"
+        )
+    with col2:
+        st.markdown("")  # Spacer
+        if max_job_age_days == 0:
+            st.info("🔓 No filter - processing all jobs")
+        elif max_job_age_days == 1:
+            st.warning("⚡ Very aggressive - last 24 hours only")
+        elif max_job_age_days <= 3:
+            st.info("🎯 Aggressive - last few days only")
+        elif max_job_age_days <= 7:
+            st.success("✅ Recommended - last week")
+        else:
+            st.info(f"📅 Processing jobs from last {max_job_age_days} days")
+
     exclusions = st.text_area(
         "Exclusion Keywords (one per line)",
         value="\n".join(preferences.get("exclusion_keywords", [])),
@@ -2081,6 +2106,7 @@ def render_profile_proposals_tab():
                 },
                 "exclusion_keywords": [s.strip() for s in exclusions.split("\n") if s.strip()],
                 "threshold": threshold,
+                "max_job_age_days": max_job_age_days,
             }
         }
 
