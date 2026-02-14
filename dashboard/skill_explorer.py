@@ -88,6 +88,13 @@ GENERIC_TERMS = {
     # Generic industry terms
     'fintech', 'healthtech', 'edtech', 'saas', 'b2b', 'b2c',
     'startup', 'agency', 'product', 'prototype', 'mvp',
+
+    # Extremely common skills (filter to surface niche opportunities)
+    'react', 'react.js', 'reactjs', 'python', 'javascript', 'js',
+    'postgresql', 'postgres', 'tensorflow', 'aws', 'amazon web services',
+    'django', 'node', 'node.js', 'nodejs', 'html', 'css',
+    'typescript', 'sql', 'mongodb', 'docker', 'kubernetes',
+    'angular', 'vue', 'vue.js', 'vuejs', 'git', 'github',
 }
 
 
