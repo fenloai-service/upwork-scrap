@@ -6,46 +6,88 @@ import streamlit as st
 import plotly.express as px
 
 
-# Generic/vague terms to filter out - expanded list
+# Generic/vague terms to filter out - very comprehensive list
 GENERIC_TERMS = {
     # Generic tech terms
     'database', 'api', 'software', 'web', 'mobile', 'app', 'application',
     'development', 'programming', 'coding', 'developer', 'engineer', 'engineering',
     'design', 'testing', 'technology', 'computer', 'internet', 'online',
-    'digital', 'tech', 'it', 'information technology',
+    'digital', 'tech', 'it', 'information technology', 'computer science',
 
     # Generic development terms
     'software development', 'web development', 'mobile development',
     'app development', 'application development', 'full stack', 'frontend',
     'backend', 'front-end', 'back-end', 'full-stack', 'front end', 'back end',
-    'fullstack', 'web design', 'mobile app', 'web app',
+    'fullstack', 'web design', 'mobile app', 'web app', 'responsive design',
+    'cross-platform', 'native', 'hybrid',
 
-    # Generic skill terms
+    # Generic skill/soft skills
     'communication', 'problem solving', 'teamwork', 'collaboration',
     'time management', 'project management', 'management', 'leadership',
-    'analytical', 'creative', 'detail oriented', 'organized',
+    'analytical', 'creative', 'detail oriented', 'organized', 'multitasking',
+    'critical thinking', 'decision making', 'adaptability', 'flexibility',
+    'work ethic', 'self-motivated', 'proactive', 'initiative',
+    'english', 'communication skills', 'written communication', 'verbal communication',
 
     # Generic platforms/concepts
     'cloud', 'saas', 'paas', 'iaas', 'platform', 'framework', 'library',
     'tool', 'tools', 'service', 'services', 'system', 'systems',
+    'infrastructure', 'architecture', 'solution', 'solutions',
 
     # Generic data terms
     'data', 'big data', 'analytics', 'analysis', 'reporting', 'visualization',
+    'data analysis', 'data entry', 'spreadsheet', 'excel', 'microsoft office',
+    'google sheets', 'powerpoint', 'word', 'office',
 
     # Catch-all terms
     'other', 'etc', 'miscellaneous', 'general', 'various', 'multiple',
-    'all', 'any', 'others', 'related', 'similar',
+    'all', 'any', 'others', 'related', 'similar', 'more', 'additional',
 
-    # Generic process terms
-    'agile', 'scrum', 'waterfall', 'devops', 'ci/cd', 'deployment',
-    'version control', 'git',
+    # Generic process/methodology terms
+    'agile', 'scrum', 'waterfall', 'kanban', 'lean', 'six sigma',
+    'devops', 'ci/cd', 'deployment', 'version control', 'git',
+    'methodology', 'best practices', 'standards', 'documentation',
 
-    # Single letter/short
-    'a', 'b', 'c', 'ai', 'ml', 'ui', 'ux', 'db', 'os',
+    # Single letter/short (except keep important ones)
+    'a', 'b', 'c', 'd', 'e', 'f', 'ai', 'ml', 'ui', 'ux', 'db', 'os',
 
     # Generic business terms
     'business', 'enterprise', 'corporate', 'commercial', 'professional',
-    'consulting', 'advisory', 'strategy', 'operations',
+    'consulting', 'advisory', 'strategy', 'operations', 'administration',
+    'sales', 'marketing', 'customer service', 'support',
+
+    # Job titles (not skills)
+    'developer', 'engineer', 'programmer', 'designer', 'analyst',
+    'architect', 'manager', 'lead', 'senior', 'junior', 'intern',
+    'consultant', 'specialist', 'expert', 'freelancer', 'contractor',
+
+    # Generic web terms
+    'website', 'webpage', 'landing page', 'responsive', 'seo',
+    'content', 'cms', 'blog', 'ecommerce', 'e-commerce',
+
+    # Too basic/common
+    'html5', 'css3', 'ajax', 'json', 'xml', 'http', 'https',
+    'ftp', 'ssh', 'linux', 'windows', 'mac', 'ubuntu',
+    'email', 'chat', 'messaging', 'notification',
+
+    # Generic quality/testing
+    'quality', 'quality assurance', 'qa', 'bug', 'debugging',
+    'troubleshooting', 'maintenance', 'support', 'optimization',
+
+    # Generic concepts
+    'algorithm', 'data structure', 'oop', 'functional programming',
+    'mvc', 'mvvm', 'rest', 'soap', 'microservices', 'monolith',
+    'scalability', 'performance', 'security', 'authentication',
+    'authorization', 'encryption',
+
+    # Too vague/broad
+    'integration', 'migration', 'upgrade', 'installation',
+    'configuration', 'setup', 'implementation', 'customization',
+    'automation', 'scripting', 'batch', 'workflow',
+
+    # Generic industry terms
+    'fintech', 'healthtech', 'edtech', 'saas', 'b2b', 'b2c',
+    'startup', 'agency', 'product', 'prototype', 'mvp',
 }
 
 
@@ -72,21 +114,45 @@ def is_generic_skill(skill: str) -> bool:
         return True
 
     # Filter very short skills (likely acronyms without context)
-    # But keep well-known ones like AWS, GCP, iOS
+    # But keep well-known ones like AWS, GCP, iOS, API frameworks
     if len(skill_lower) <= 2:
-        if skill_lower not in ['r', 'c', 'go', 'c++', 'c#', 'vb']:
+        keep_short = ['r', 'c', 'go', 'c++', 'c#', 'vb', 'qt', 'd3']
+        if skill_lower not in keep_short:
             return True
 
     # Filter if skill contains only generic words
-    generic_words = ['web', 'app', 'mobile', 'data', 'software', 'development', 'design']
-    words = skill_lower.split()
-    if all(word in generic_words for word in words):
+    generic_words = {
+        'web', 'app', 'mobile', 'data', 'software', 'development', 'design',
+        'full', 'stack', 'front', 'back', 'end', 'native', 'cross', 'platform',
+        'responsive', 'modern', 'clean', 'simple', 'advanced', 'basic',
+        'programming', 'coding', 'developer', 'engineer'
+    }
+    words = set(skill_lower.split())
+    if words and words.issubset(generic_words):
         return True
 
     # Filter common job titles mistaken as skills
-    job_titles = ['developer', 'engineer', 'programmer', 'designer', 'analyst',
-                  'architect', 'manager', 'lead', 'senior', 'junior', 'intern']
+    job_titles = {
+        'developer', 'engineer', 'programmer', 'designer', 'analyst',
+        'architect', 'manager', 'lead', 'senior', 'junior', 'intern',
+        'consultant', 'specialist', 'expert', 'freelancer', 'contractor',
+        'full stack developer', 'frontend developer', 'backend developer',
+        'web developer', 'software engineer', 'data analyst'
+    }
     if skill_lower in job_titles:
+        return True
+
+    # Filter generic phrases
+    generic_phrases = [
+        'years of experience', 'experience in', 'knowledge of', 'proficiency in',
+        'ability to', 'skilled in', 'expert in', 'familiar with'
+    ]
+    for phrase in generic_phrases:
+        if phrase in skill_lower:
+            return True
+
+    # Filter if skill is just a number or year
+    if skill_lower.replace('+', '').replace('years', '').strip().isdigit():
         return True
 
     return False
