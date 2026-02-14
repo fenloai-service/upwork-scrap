@@ -6,15 +6,46 @@ import streamlit as st
 import plotly.express as px
 
 
-# Generic/vague terms to filter out
+# Generic/vague terms to filter out - expanded list
 GENERIC_TERMS = {
+    # Generic tech terms
     'database', 'api', 'software', 'web', 'mobile', 'app', 'application',
-    'development', 'programming', 'coding', 'developer', 'engineer',
+    'development', 'programming', 'coding', 'developer', 'engineer', 'engineering',
     'design', 'testing', 'technology', 'computer', 'internet', 'online',
-    'digital', 'tech', 'it', 'software development', 'web development',
-    'mobile development', 'app development', 'full stack', 'frontend',
-    'backend', 'front-end', 'back-end', 'full-stack', 'other', 'etc',
-    'miscellaneous', 'general', 'various', 'multiple', 'all', 'any'
+    'digital', 'tech', 'it', 'information technology',
+
+    # Generic development terms
+    'software development', 'web development', 'mobile development',
+    'app development', 'application development', 'full stack', 'frontend',
+    'backend', 'front-end', 'back-end', 'full-stack', 'front end', 'back end',
+    'fullstack', 'web design', 'mobile app', 'web app',
+
+    # Generic skill terms
+    'communication', 'problem solving', 'teamwork', 'collaboration',
+    'time management', 'project management', 'management', 'leadership',
+    'analytical', 'creative', 'detail oriented', 'organized',
+
+    # Generic platforms/concepts
+    'cloud', 'saas', 'paas', 'iaas', 'platform', 'framework', 'library',
+    'tool', 'tools', 'service', 'services', 'system', 'systems',
+
+    # Generic data terms
+    'data', 'big data', 'analytics', 'analysis', 'reporting', 'visualization',
+
+    # Catch-all terms
+    'other', 'etc', 'miscellaneous', 'general', 'various', 'multiple',
+    'all', 'any', 'others', 'related', 'similar',
+
+    # Generic process terms
+    'agile', 'scrum', 'waterfall', 'devops', 'ci/cd', 'deployment',
+    'version control', 'git',
+
+    # Single letter/short
+    'a', 'b', 'c', 'ai', 'ml', 'ui', 'ux', 'db', 'os',
+
+    # Generic business terms
+    'business', 'enterprise', 'corporate', 'commercial', 'professional',
+    'consulting', 'advisory', 'strategy', 'operations',
 }
 
 
@@ -27,18 +58,35 @@ def is_generic_skill(skill: str) -> bool:
     Returns:
         True if skill is generic and should be filtered out
     """
+    if not skill or not isinstance(skill, str):
+        return True
+
     skill_lower = skill.lower().strip()
+
+    # Filter empty or whitespace-only
+    if not skill_lower:
+        return True
 
     # Filter exact matches
     if skill_lower in GENERIC_TERMS:
         return True
 
     # Filter very short skills (likely acronyms without context)
+    # But keep well-known ones like AWS, GCP, iOS
     if len(skill_lower) <= 2:
+        if skill_lower not in ['r', 'c', 'go', 'c++', 'c#', 'vb']:
+            return True
+
+    # Filter if skill contains only generic words
+    generic_words = ['web', 'app', 'mobile', 'data', 'software', 'development', 'design']
+    words = skill_lower.split()
+    if all(word in generic_words for word in words):
         return True
 
-    # Filter skills that are just single common words
-    if skill_lower in ['web', 'app', 'mobile', 'api', 'data', 'software']:
+    # Filter common job titles mistaken as skills
+    job_titles = ['developer', 'engineer', 'programmer', 'designer', 'analyst',
+                  'architect', 'manager', 'lead', 'senior', 'junior', 'intern']
+    if skill_lower in job_titles:
         return True
 
     return False
@@ -138,38 +186,51 @@ def render_skill_explorer(df: pd.DataFrame):
 
     # Flatten all skills with domain categorization and metadata
     skill_data = []
-    for _, row in df.iterrows():
-        skills = row.get('skills_list', [])
-        if not skills:
-            continue
 
-        for skill in skills:
-            # Skip generic terms
-            if is_generic_skill(skill):
+    try:
+        for _, row in df.iterrows():
+            skills = row.get('skills_list', [])
+            if not skills or not isinstance(skills, list):
                 continue
-            domain = categorize_skill(skill)
 
-            # Get budget (prefer fixed price, fallback to hourly)
-            budget = None
-            if row.get('job_type') == 'Fixed' and pd.notna(row.get('fixed_price')):
-                budget = row.get('fixed_price')
-            elif row.get('job_type') == 'Hourly' and pd.notna(row.get('hourly_rate_max')):
-                # Estimate project value (assume 40 hours for comparison)
-                budget = row.get('hourly_rate_max', 0) * 40
+            for skill in skills:
+                # Skip generic terms
+                if is_generic_skill(skill):
+                    continue
 
-            skill_data.append({
-                'skill': skill,
-                'domain': domain,
-                'budget': budget,
-                'job_uid': row.get('uid', ''),
-                'score': row.get('score', 0)
-            })
+                domain = categorize_skill(skill)
 
-    if not skill_data:
-        st.info("No skills found in the dataset")
+                # Get budget (prefer fixed price, fallback to hourly)
+                budget = None
+                try:
+                    if row.get('job_type') == 'Fixed' and pd.notna(row.get('fixed_price')):
+                        budget = float(row.get('fixed_price'))
+                    elif row.get('job_type') == 'Hourly' and pd.notna(row.get('hourly_rate_max')):
+                        # Estimate project value (assume 40 hours for comparison)
+                        budget = float(row.get('hourly_rate_max', 0)) * 40
+                except (ValueError, TypeError):
+                    budget = None
+
+                skill_data.append({
+                    'skill': skill,
+                    'domain': domain,
+                    'budget': budget,
+                    'job_uid': row.get('uid', ''),
+                    'score': row.get('score', 0)
+                })
+    except Exception as e:
+        st.error(f"Error processing skills: {str(e)}")
         return
 
-    skill_df = pd.DataFrame(skill_data)
+    if not skill_data:
+        st.info("No meaningful skills found after filtering")
+        return
+
+    try:
+        skill_df = pd.DataFrame(skill_data)
+    except Exception as e:
+        st.error(f"Error creating dataframe: {str(e)}")
+        return
 
     # 1. Domain Overview (Donut Chart)
     st.markdown("#### 📊 Skills by Domain")
@@ -243,13 +304,18 @@ def render_skill_explorer(df: pd.DataFrame):
         return
 
     # Display metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Skills", len(skill_stats))
-    col2.metric("Total Jobs", skill_stats['job_count'].sum())
-    if pd.notna(skill_stats['avg_budget'].mean()):
-        col3.metric("Avg Budget", f"${skill_stats['avg_budget'].mean():,.0f}")
-    else:
-        col3.metric("Avg Budget", "N/A")
+    try:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Skills", len(skill_stats))
+        col2.metric("Total Jobs", int(skill_stats['job_count'].sum()))
+
+        avg_budget_val = skill_stats['avg_budget'].mean()
+        if pd.notna(avg_budget_val) and avg_budget_val > 0:
+            col3.metric("Avg Budget", f"${avg_budget_val:,.0f}")
+        else:
+            col3.metric("Avg Budget", "N/A")
+    except Exception as e:
+        st.warning(f"Could not display metrics: {str(e)}")
 
     # Interactive bar chart with budget color coding
     try:
