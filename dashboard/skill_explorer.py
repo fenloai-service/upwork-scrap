@@ -6,6 +6,44 @@ import streamlit as st
 import plotly.express as px
 
 
+# Generic/vague terms to filter out
+GENERIC_TERMS = {
+    'database', 'api', 'software', 'web', 'mobile', 'app', 'application',
+    'development', 'programming', 'coding', 'developer', 'engineer',
+    'design', 'testing', 'technology', 'computer', 'internet', 'online',
+    'digital', 'tech', 'it', 'software development', 'web development',
+    'mobile development', 'app development', 'full stack', 'frontend',
+    'backend', 'front-end', 'back-end', 'full-stack', 'other', 'etc',
+    'miscellaneous', 'general', 'various', 'multiple', 'all', 'any'
+}
+
+
+def is_generic_skill(skill: str) -> bool:
+    """Check if a skill is too generic to be useful.
+
+    Args:
+        skill: Skill name to check
+
+    Returns:
+        True if skill is generic and should be filtered out
+    """
+    skill_lower = skill.lower().strip()
+
+    # Filter exact matches
+    if skill_lower in GENERIC_TERMS:
+        return True
+
+    # Filter very short skills (likely acronyms without context)
+    if len(skill_lower) <= 2:
+        return True
+
+    # Filter skills that are just single common words
+    if skill_lower in ['web', 'app', 'mobile', 'api', 'data', 'software']:
+        return True
+
+    return False
+
+
 # Skill domain mapping - categorize skills into meaningful groups
 SKILL_DOMAINS = {
     'Frontend': [
@@ -30,7 +68,7 @@ SKILL_DOMAINS = {
     ],
     'Database': [
         'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'SQLite', 'Elasticsearch',
-        'SQL', 'NoSQL', 'Database', 'DynamoDB', 'Cassandra', 'Oracle',
+        'SQL', 'NoSQL', 'DynamoDB', 'Cassandra', 'Oracle',
         'SQL Server', 'MariaDB', 'Firebase', 'Firestore', 'Supabase'
     ],
     'Cloud & DevOps': [
@@ -44,7 +82,7 @@ SKILL_DOMAINS = {
         'BigQuery', 'Redshift', 'Data Lake'
     ],
     'AI & Automation': [
-        'API', 'REST API', 'GraphQL', 'Automation', 'Web Scraping',
+        'REST API', 'GraphQL', 'Automation', 'Web Scraping',
         'Selenium', 'Puppeteer', 'Bot', 'RPA', 'Playwright', 'BeautifulSoup',
         'Scrapy', 'API Integration', 'Zapier', 'Make', 'n8n'
     ],
@@ -106,6 +144,9 @@ def render_skill_explorer(df: pd.DataFrame):
             continue
 
         for skill in skills:
+            # Skip generic terms
+            if is_generic_skill(skill):
+                continue
             domain = categorize_skill(skill)
 
             # Get budget (prefer fixed price, fallback to hourly)
@@ -133,35 +174,39 @@ def render_skill_explorer(df: pd.DataFrame):
     # 1. Domain Overview (Donut Chart)
     st.markdown("#### 📊 Skills by Domain")
 
-    domain_counts = skill_df['domain'].value_counts().reset_index()
-    domain_counts.columns = ['domain', 'count']
+    try:
+        domain_counts = skill_df['domain'].value_counts().reset_index()
+        domain_counts.columns = ['domain', 'count']
 
-    # Sort by count descending
-    domain_counts = domain_counts.sort_values('count', ascending=False)
+        # Sort by count descending
+        domain_counts = domain_counts.sort_values('count', ascending=False)
 
-    fig = px.pie(
-        domain_counts,
-        values='count',
-        names='domain',
-        hole=0.4,
-        color_discrete_sequence=px.colors.qualitative.Set3,
-        title="Distribution of Skills Across Domains"
-    )
-    fig.update_traces(
-        textposition='outside',
-        textinfo='percent+label',
-        hovertemplate='<b>%{label}</b><br>Skills: %{value}<br>Percentage: %{percent}<extra></extra>'
-    )
-    fig.update_layout(height=400, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+        fig = px.pie(
+            domain_counts,
+            values='count',
+            names='domain',
+            hole=0.4,
+            color_discrete_sequence=px.colors.qualitative.Set3,
+            title="Distribution of Skills Across Domains"
+        )
+        fig.update_traces(
+            textposition='outside',
+            textinfo='percent+label',
+            hovertemplate='<b>%{label}</b><br>Skills: %{value}<br>Percentage: %{percent}<extra></extra>'
+        )
+        fig.update_layout(height=400, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Show domain breakdown with counts
-    col1, col2 = st.columns([2, 1])
-    with col2:
-        st.markdown("**Domain Breakdown:**")
-        for _, row in domain_counts.head(8).iterrows():
-            pct = (row['count'] / domain_counts['count'].sum()) * 100
-            st.markdown(f"• **{row['domain']}**: {row['count']} ({pct:.1f}%)")
+        # Show domain breakdown with counts
+        col1, col2 = st.columns([2, 1])
+        with col2:
+            st.markdown("**Domain Breakdown:**")
+            for _, row in domain_counts.head(8).iterrows():
+                pct = (row['count'] / domain_counts['count'].sum()) * 100
+                st.markdown(f"• **{row['domain']}**: {row['count']} ({pct:.1f}%)")
+    except Exception as e:
+        st.error(f"Error creating domain overview: {e}")
+        st.info("Try refreshing the page or checking your data.")
 
     st.markdown("---")
 
@@ -181,13 +226,17 @@ def render_skill_explorer(df: pd.DataFrame):
         filtered_skills = skill_df[skill_df['domain'] == selected_domain]
 
     # Aggregate skill statistics
-    skill_stats = filtered_skills.groupby('skill').agg({
-        'job_uid': 'count',
-        'budget': 'mean',
-        'score': 'mean'
-    }).reset_index()
-    skill_stats.columns = ['skill', 'job_count', 'avg_budget', 'avg_score']
-    skill_stats = skill_stats.sort_values('job_count', ascending=False).head(30)
+    try:
+        skill_stats = filtered_skills.groupby('skill').agg({
+            'job_uid': 'count',
+            'budget': 'mean',
+            'score': 'mean'
+        }).reset_index()
+        skill_stats.columns = ['skill', 'job_count', 'avg_budget', 'avg_score']
+        skill_stats = skill_stats.sort_values('job_count', ascending=False).head(30)
+    except Exception as e:
+        st.error(f"Error aggregating skill data: {e}")
+        return
 
     if skill_stats.empty:
         st.info(f"No skills found for domain: {selected_domain}")
@@ -203,37 +252,42 @@ def render_skill_explorer(df: pd.DataFrame):
         col3.metric("Avg Budget", "N/A")
 
     # Interactive bar chart with budget color coding
-    fig = px.bar(
-        skill_stats,
-        x='job_count',
-        y='skill',
-        orientation='h',
-        color='avg_budget',
-        color_continuous_scale='Viridis',
-        hover_data={
-            'job_count': True,
-            'avg_budget': ':.0f',
-            'avg_score': ':.1f'
-        },
-        labels={
-            'job_count': 'Number of Jobs',
-            'avg_budget': 'Avg Budget ($)',
-            'avg_score': 'Avg Match Score',
-            'skill': 'Skill'
-        },
-        title=f"Top Skills in {selected_domain}"
-    )
-    fig.update_traces(
-        hovertemplate='<b>%{y}</b><br>Jobs: %{x}<br>Avg Budget: $%{customdata[0]:,.0f}<br>Avg Score: %{customdata[1]:.1f}<extra></extra>'
-    )
-    fig.update_layout(
-        height=max(500, len(skill_stats) * 22),
-        yaxis={'categoryorder': 'total ascending'},
-        xaxis_title="Number of Jobs",
-        yaxis_title="",
-        coloraxis_colorbar_title="Avg Budget"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        fig = px.bar(
+            skill_stats,
+            x='job_count',
+            y='skill',
+            orientation='h',
+            color='avg_budget',
+            color_continuous_scale='Viridis',
+            hover_data={
+                'job_count': True,
+                'avg_budget': ':.0f',
+                'avg_score': ':.1f'
+            },
+            labels={
+                'job_count': 'Number of Jobs',
+                'avg_budget': 'Avg Budget ($)',
+                'avg_score': 'Avg Match Score',
+                'skill': 'Skill'
+            },
+            title=f"Top Skills in {selected_domain}"
+        )
+        fig.update_traces(
+            hovertemplate='<b>%{y}</b><br>Jobs: %{x}<br>Avg Budget: $%{customdata[0]:,.0f}<br>Avg Score: %{customdata[1]:.1f}<extra></extra>'
+        )
+        fig.update_layout(
+            height=max(500, len(skill_stats) * 22),
+            yaxis={'categoryorder': 'total ascending'},
+            xaxis_title="Number of Jobs",
+            yaxis_title="",
+            coloraxis_colorbar_title="Avg Budget"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error creating skill chart: {e}")
+        # Fallback: show simple table
+        st.dataframe(skill_stats[['skill', 'job_count']], use_container_width=True)
 
     # 3. Detailed Skill Table
     with st.expander("📋 View Detailed Skill Statistics"):
@@ -268,11 +322,13 @@ def render_skill_search(df: pd.DataFrame):
         st.info("No data available")
         return
 
-    # Get all unique skills
+    # Get all unique skills (filter out generic terms)
     all_skills = set()
     for skills in df['skills_list']:
         if skills:
-            all_skills.update(skills)
+            # Filter out generic terms
+            meaningful_skills = [s for s in skills if not is_generic_skill(s)]
+            all_skills.update(meaningful_skills)
     all_skills = sorted(list(all_skills))
 
     if not all_skills:
@@ -333,7 +389,7 @@ def render_skill_search(df: pd.DataFrame):
     related_skills = Counter()
     for _, row in filtered_df.iterrows():
         for skill in row.get('skills_list', []):
-            if skill not in selected_skills:
+            if skill not in selected_skills and not is_generic_skill(skill):
                 related_skills[skill] += 1
 
     if related_skills:
