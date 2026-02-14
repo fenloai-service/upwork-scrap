@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Add project root to Python path for imports
@@ -439,6 +439,189 @@ def load_monitor_health():
         return None
 
 
+def parse_job_date(date_str: str) -> datetime:
+    """Parse job posted_date_estimated to datetime.
+
+    Handles both formats:
+    - "2026-02-14" (date only)
+    - "2026-02-14 13:45" (date with time)
+
+    Returns:
+        datetime object, or very old date if parse fails
+    """
+    if not date_str:
+        return datetime(2000, 1, 1)  # Default to old date
+
+    try:
+        if len(date_str) > 10:  # Has time component
+            return datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+        else:  # Date only
+            return datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return datetime(2000, 1, 1)
+
+
+def render_date_filter(filter_type: str) -> dict:
+    """Render date range filter component in sidebar.
+
+    Args:
+        filter_type: "jobs" or "proposals"
+
+    Returns:
+        dict: {
+            "mode": "all" | "last_2" | "last_7" | "last_30" | "custom",
+            "start_date": date or None,
+            "end_date": date or None
+        }
+    """
+    st.markdown("📅 **Date Range**")
+
+    # Quick filter options
+    filter_mode = st.radio(
+        "Select Range",
+        options=["all", "last_2", "last_7", "last_30", "custom"],
+        format_func=lambda x: {
+            "all": "📚 All Time",
+            "last_2": "📅 Last 2 Days",
+            "last_7": "📆 Last 7 Days",
+            "last_30": "📆 Last 30 Days",
+            "custom": "🎯 Custom Range"
+        }[x],
+        index=1,  # Default to "last_2"
+        key=f"{filter_type}_date_mode"
+    )
+
+    start_date = None
+    end_date = None
+
+    if filter_mode == "last_2":
+        start_date = datetime.now() - timedelta(days=2)
+        end_date = datetime.now()
+    elif filter_mode == "last_7":
+        start_date = datetime.now() - timedelta(days=7)
+        end_date = datetime.now()
+    elif filter_mode == "last_30":
+        start_date = datetime.now() - timedelta(days=30)
+        end_date = datetime.now()
+    elif filter_mode == "custom":
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "From",
+                value=datetime.now() - timedelta(days=30),
+                key=f"{filter_type}_start_date"
+            )
+        with col2:
+            end_date = st.date_input(
+                "To",
+                value=datetime.now(),
+                key=f"{filter_type}_end_date"
+            )
+
+    return {
+        "mode": filter_mode,
+        "start_date": start_date,
+        "end_date": end_date
+    }
+
+
+def filter_jobs_by_criteria(df, date_filter: dict, score_range: tuple) -> pd.DataFrame:
+    """Filter jobs DataFrame by date and score range.
+
+    Args:
+        df: Jobs DataFrame
+        date_filter: Date filter dict from render_date_filter()
+        score_range: Tuple of (min_score, max_score)
+
+    Returns:
+        Filtered DataFrame
+    """
+    filtered = df.copy()
+
+    # Apply date filter
+    if date_filter["mode"] != "all" and date_filter["start_date"]:
+        start_dt = datetime.combine(
+            date_filter["start_date"] if hasattr(date_filter["start_date"], 'year') else date_filter["start_date"],
+            datetime.min.time()
+        )
+        end_dt = datetime.combine(
+            date_filter["end_date"] if hasattr(date_filter["end_date"], 'year') else date_filter["end_date"],
+            datetime.max.time()
+        )
+
+        # Parse posted_date_estimated for each job
+        def is_in_range(row):
+            date_str = row.get("posted_date_estimated", "")
+            if not date_str:
+                return False
+            job_date = parse_job_date(date_str)
+            return start_dt <= job_date <= end_dt
+
+        filtered = filtered[filtered.apply(is_in_range, axis=1)]
+
+    # Apply score filter
+    min_score, max_score = score_range
+    if 'score' in filtered.columns:
+        filtered = filtered[
+            (filtered['score'].isna()) |
+            ((filtered['score'] >= min_score) & (filtered['score'] <= max_score))
+        ]
+
+    return filtered
+
+
+def filter_proposals_by_criteria(df, date_filter: dict, score_range: tuple, status_filter: list) -> pd.DataFrame:
+    """Filter proposals DataFrame by date, score, and status.
+
+    Args:
+        df: Proposals DataFrame
+        date_filter: Date filter dict from render_date_filter()
+        score_range: Tuple of (min_score, max_score)
+        status_filter: List of statuses to include
+
+    Returns:
+        Filtered DataFrame
+    """
+    filtered = df.copy()
+
+    # Apply status filter
+    if status_filter and 'status' in filtered.columns:
+        filtered = filtered[filtered['status'].isin(status_filter)]
+
+    # Apply date filter (on generated_at)
+    if date_filter["mode"] != "all" and date_filter["start_date"] and 'generated_at' in filtered.columns:
+        start_dt = datetime.combine(
+            date_filter["start_date"] if hasattr(date_filter["start_date"], 'year') else date_filter["start_date"],
+            datetime.min.time()
+        )
+        end_dt = datetime.combine(
+            date_filter["end_date"] if hasattr(date_filter["end_date"], 'year') else date_filter["end_date"],
+            datetime.max.time()
+        )
+
+        def is_in_range(row):
+            date_str = row.get("generated_at", "")
+            if not date_str:
+                return False
+            try:
+                gen_date = datetime.fromisoformat(date_str)
+                return start_dt <= gen_date <= end_dt
+            except (ValueError, TypeError):
+                return False
+
+        filtered = filtered[filtered.apply(is_in_range, axis=1)]
+
+    # Apply score filter (on match_score)
+    min_score, max_score = score_range
+    if 'match_score' in filtered.columns:
+        filtered = filtered[
+            (filtered['match_score'].isna()) |
+            ((filtered['match_score'] >= min_score) & (filtered['match_score'] <= max_score))
+        ]
+
+    return filtered
+
+
 def render_monitor_health_header():
     """Render monitor health status header in Proposals tab."""
     health = load_monitor_health()
@@ -593,6 +776,44 @@ def render_sidebar(df):
 
 def render_jobs_tab(df, filters):
     """Render the Jobs tab with filtered and sorted job listings."""
+
+    # ── Sidebar Filters ──
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🔍 Filters")
+
+        # Date range filter
+        date_filter = render_date_filter(filter_type="jobs")
+
+        # Score range filter
+        score_range = st.slider(
+            "💯 Score Range",
+            min_value=0,
+            max_value=100,
+            value=(0, 100),
+            key="jobs_score_filter"
+        )
+
+        # Reset button
+        if st.button("🔄 Reset Filters", key="jobs_reset"):
+            # Reset session state keys
+            if "jobs_date_mode" in st.session_state:
+                st.session_state.jobs_date_mode = "last_2"
+            if "jobs_score_filter" in st.session_state:
+                st.session_state.jobs_score_filter = (0, 100)
+            st.rerun()
+
+    # Apply date and score filters
+    df = filter_jobs_by_criteria(df, date_filter, score_range)
+
+    # Show filter summary
+    if date_filter["mode"] != "all":
+        start_str = date_filter["start_date"].strftime("%Y-%m-%d") if hasattr(date_filter["start_date"], 'strftime') else str(date_filter["start_date"])
+        end_str = date_filter["end_date"].strftime("%Y-%m-%d") if hasattr(date_filter["end_date"], 'strftime') else str(date_filter["end_date"])
+        st.info(f"📅 Showing jobs from **{start_str}** to **{end_str}**")
+
+    if score_range != (0, 100):
+        st.info(f"💯 Score range: **{score_range[0]}-{score_range[1]}**")
 
     # Sort controls
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -946,6 +1167,43 @@ def render_analytics_tab(df):
 
 def render_proposals_tab(filters=None):
     """Render the Proposals tab with proposal cards and management UI."""
+
+    # ── Sidebar Filters ──
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🔍 Filters")
+
+        # Date range filter
+        date_filter = render_date_filter(filter_type="proposals")
+
+        # Score range filter
+        score_range = st.slider(
+            "💯 Score Range",
+            min_value=0,
+            max_value=100,
+            value=(0, 100),
+            key="proposals_score_filter"
+        )
+
+        # Status filter
+        status_filter = st.multiselect(
+            "📊 Status",
+            options=["pending_review", "approved", "submitted", "rejected"],
+            default=["pending_review"],
+            key="proposals_status_filter"
+        )
+
+        # Reset button
+        if st.button("🔄 Reset Filters", key="proposals_reset"):
+            # Reset session state keys
+            if "proposals_date_mode" in st.session_state:
+                st.session_state.proposals_date_mode = "last_2"
+            if "proposals_score_filter" in st.session_state:
+                st.session_state.proposals_score_filter = (0, 100)
+            if "proposals_status_filter" in st.session_state:
+                st.session_state.proposals_status_filter = ["pending_review"]
+            st.rerun()
+
     st.markdown("### ✍️ Proposals")
 
     # Check read-only mode
@@ -1017,6 +1275,25 @@ def render_proposals_tab(filters=None):
 
     # Convert to dataframe for easier filtering
     prop_df = pd.DataFrame(proposals)
+
+    # Apply date, score, and status filters
+    prop_df = filter_proposals_by_criteria(prop_df, date_filter, score_range, status_filter)
+
+    # Show filter summary
+    if date_filter["mode"] != "all":
+        start_str = date_filter["start_date"].strftime("%Y-%m-%d") if hasattr(date_filter["start_date"], 'strftime') else str(date_filter["start_date"])
+        end_str = date_filter["end_date"].strftime("%Y-%m-%d") if hasattr(date_filter["end_date"], 'strftime') else str(date_filter["end_date"])
+        st.info(f"📅 Showing proposals from **{start_str}** to **{end_str}**")
+
+    if score_range != (0, 100):
+        st.info(f"💯 Score range: **{score_range[0]}-{score_range[1]}**")
+
+    if status_filter and len(status_filter) < 4:  # Not all statuses selected
+        st.info(f"📊 Status filter: **{', '.join(status_filter)}**")
+
+    if prop_df.empty:
+        st.info("🔍 No proposals match the current filters. Try adjusting your filters.")
+        return
 
     # Apply sidebar filters (search, category, tool, job type, experience, budget, score)
     if filters:
