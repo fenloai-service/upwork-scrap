@@ -1242,35 +1242,50 @@ def render_proposals_tab(filters=None):
     try:
         analytics = get_proposal_analytics()
 
-        if analytics['total_proposals'] > 0:
+        if analytics and analytics.get('total_proposals', 0) > 0:
             # Top-level metrics
             col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Total Proposals", analytics['total_proposals'])
-            col2.metric("Acceptance Rate", f"{analytics['acceptance_rate']}%",
+            col1.metric("Total Proposals", analytics.get('total_proposals', 0))
+            col2.metric("Acceptance Rate", f"{analytics.get('acceptance_rate', 0):.1f}%",
                        help="% of proposals that were approved or submitted")
-            col3.metric("Avg Match Score", f"{analytics['avg_match_score']}/100")
-            col4.metric("Avg Rating",
-                       f"{'⭐' * int(analytics['avg_rating'])}" if analytics['avg_rating'] else "N/A",
-                       help=f"{analytics['avg_rating']:.1f}/5.0" if analytics['avg_rating'] else "No ratings yet")
-            col5.metric("Submitted", analytics['submitted'])
+            col3.metric("Avg Match Score", f"{analytics.get('avg_match_score', 0):.1f}/100")
+
+            avg_rating = analytics.get('avg_rating')
+            if avg_rating and avg_rating > 0:
+                col4.metric("Avg Rating",
+                           f"{'⭐' * int(avg_rating)}",
+                           help=f"{avg_rating:.1f}/5.0")
+            else:
+                col4.metric("Avg Rating", "N/A", help="No ratings yet")
+
+            col5.metric("Submitted", analytics.get('submitted', 0))
 
             # Rating distribution chart (if any ratings exist)
-            if analytics['rating_distribution']:
+            rating_dist = analytics.get('rating_distribution', {})
+            if rating_dist and len(rating_dist) > 0:
                 st.markdown("**Quality Ratings Distribution:**")
-                rating_data = pd.DataFrame([
-                    {"Rating": f"{'⭐' * r}", "Count": count}
-                    for r, count in sorted(analytics['rating_distribution'].items())
-                ])
+                try:
+                    rating_data = pd.DataFrame([
+                        {"Rating": f"{'⭐' * int(r)}", "Count": int(count)}
+                        for r, count in sorted(rating_dist.items()) if r and count
+                    ])
+                except Exception as e:
+                    st.warning(f"Could not display rating distribution: {str(e)}")
+                    rating_data = None
 
-                fig = px.bar(
-                    rating_data,
-                    x='Rating',
-                    y='Count',
-                    color='Count',
-                    color_continuous_scale='Greens'
-                )
-                fig.update_layout(showlegend=False, height=250, xaxis_title="", yaxis_title="Proposals")
-                st.plotly_chart(fig, use_container_width=True)
+                if rating_data is not None and not rating_data.empty:
+                    try:
+                        fig = px.bar(
+                            rating_data,
+                            x='Rating',
+                            y='Count',
+                            color='Count',
+                            color_continuous_scale='Greens'
+                        )
+                        fig.update_layout(showlegend=False, height=250, xaxis_title="", yaxis_title="Proposals")
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not render rating chart: {str(e)}")
 
             st.markdown("---")
     except (KeyError, ValueError, TypeError, OSError) as e:

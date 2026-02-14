@@ -463,15 +463,19 @@ def render_skill_search(df: pd.DataFrame):
 
     # Get all unique skills (filter out generic terms)
     all_skills = set()
-    for skills in df['skills_list']:
-        if skills:
-            # Filter out generic terms
-            meaningful_skills = [s for s in skills if not is_generic_skill(s)]
-            all_skills.update(meaningful_skills)
-    all_skills = sorted(list(all_skills))
+    try:
+        for skills in df['skills_list']:
+            if skills and isinstance(skills, list):
+                # Filter out generic terms
+                meaningful_skills = [s for s in skills if not is_generic_skill(s)]
+                all_skills.update(meaningful_skills)
+        all_skills = sorted(list(all_skills))
+    except Exception as e:
+        st.error(f"Error processing skills: {str(e)}")
+        return
 
     if not all_skills:
-        st.info("No skills found in dataset")
+        st.info("No meaningful skills found after filtering. Try adjusting filters or checking your data.")
         return
 
     # Multi-select for skills
@@ -488,36 +492,47 @@ def render_skill_search(df: pd.DataFrame):
         return
 
     # Filter jobs containing ANY of selected skills
-    mask = df['skills_list'].apply(
-        lambda skills: any(skill in selected_skills for skill in (skills or []))
-    )
-    filtered_df = df[mask]
+    try:
+        mask = df['skills_list'].apply(
+            lambda skills: any(skill in selected_skills for skill in (skills or [])) if isinstance(skills, list) else False
+        )
+        filtered_df = df[mask]
+    except Exception as e:
+        st.error(f"Error filtering jobs: {str(e)}")
+        return
 
     if filtered_df.empty:
         st.warning("No jobs found with selected skills")
         return
 
     # Display key metrics
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Jobs Found", len(filtered_df))
-    col2.metric("Avg Match Score", f"{filtered_df['score'].mean():.1f}")
+    try:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Jobs Found", len(filtered_df))
 
-    # Budget metrics
-    fixed_jobs = filtered_df[filtered_df['job_type'] == 'Fixed']
-    hourly_jobs = filtered_df[filtered_df['job_type'] == 'Hourly']
+        if 'score' in filtered_df.columns and not filtered_df['score'].isna().all():
+            col2.metric("Avg Match Score", f"{filtered_df['score'].mean():.1f}")
+        else:
+            col2.metric("Avg Match Score", "N/A")
 
-    avg_fixed = fixed_jobs['fixed_price'].mean() if not fixed_jobs.empty else None
-    avg_hourly = hourly_jobs['hourly_rate_max'].mean() if not hourly_jobs.empty else None
+        # Budget metrics
+        fixed_jobs = filtered_df[filtered_df['job_type'] == 'Fixed']
+        hourly_jobs = filtered_df[filtered_df['job_type'] == 'Hourly']
 
-    if pd.notna(avg_fixed):
-        col3.metric("Avg Fixed Budget", f"${avg_fixed:,.0f}")
-    else:
-        col3.metric("Avg Fixed Budget", "N/A")
+        avg_fixed = fixed_jobs['fixed_price'].mean() if not fixed_jobs.empty and 'fixed_price' in fixed_jobs.columns else None
+        avg_hourly = hourly_jobs['hourly_rate_max'].mean() if not hourly_jobs.empty and 'hourly_rate_max' in hourly_jobs.columns else None
 
-    if pd.notna(avg_hourly):
-        col4.metric("Avg Hourly Rate", f"${avg_hourly:.0f}/hr")
-    else:
-        col4.metric("Avg Hourly Rate", "N/A")
+        if pd.notna(avg_fixed) and avg_fixed > 0:
+            col3.metric("Avg Fixed Budget", f"${avg_fixed:,.0f}")
+        else:
+            col3.metric("Avg Fixed Budget", "N/A")
+
+        if pd.notna(avg_hourly) and avg_hourly > 0:
+            col4.metric("Avg Hourly Rate", f"${avg_hourly:.0f}/hr")
+        else:
+            col4.metric("Avg Hourly Rate", "N/A")
+    except Exception as e:
+        st.warning(f"Could not display all metrics: {str(e)}")
 
     st.markdown("---")
 
@@ -526,10 +541,16 @@ def render_skill_search(df: pd.DataFrame):
     st.caption("These are the skills most commonly found in jobs that also require your selected skills")
 
     related_skills = Counter()
-    for _, row in filtered_df.iterrows():
-        for skill in row.get('skills_list', []):
-            if skill not in selected_skills and not is_generic_skill(skill):
-                related_skills[skill] += 1
+    try:
+        for _, row in filtered_df.iterrows():
+            skills = row.get('skills_list', [])
+            if skills and isinstance(skills, list):
+                for skill in skills:
+                    if skill not in selected_skills and not is_generic_skill(skill):
+                        related_skills[skill] += 1
+    except Exception as e:
+        st.error(f"Error analyzing co-occurring skills: {str(e)}")
+        return
 
     if related_skills:
         related_df = pd.DataFrame([
