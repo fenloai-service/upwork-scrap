@@ -192,6 +192,25 @@ Each stage function is independently testable with isolated error handling. Logs
 
 **Loop mode** (`--loop`): `_monitor_loop()` wraps `cmd_monitor_new()` in a `while True` loop. After each pipeline run it re-reads `config/scraping.yaml` → `scraping.scheduler.interval_minutes` (default 60) and sleeps for that duration before the next run. The interval is hot-reloaded each cycle, so changing it in the dashboard takes effect after the current sleep finishes. Stop with Ctrl+C.
 
+## Dashboard
+
+`dashboard/app.py` is the main Streamlit dashboard with 6 tabs: Proposals, Jobs, Favorites, Analytics, Scraping & AI, Profile & Proposals. Supporting modules:
+- `dashboard/analytics.py` -- DataFrame analytics (skill frequency, distributions)
+- `dashboard/skill_explorer.py` -- Interactive skill domain analysis with generic-term filtering
+- `dashboard/tech_stacks.py` -- Technology stack pattern detection (MERN, Python ML, etc.)
+- `dashboard/job_types.py` -- Intelligent job categorization (AI/ML, Web Dev, etc.)
+- `dashboard/config_editor.py` -- In-dashboard YAML config editor (path-traversal safe)
+
+**Timezone**: All dashboard timestamps use Bangladesh Standard Time (BST, UTC+6) via `BST = timezone(timedelta(hours=6))`. Date filters ("Last 2 Days" etc.) calculate ranges in BST.
+
+**Proposal date filtering**: The Proposals tab filters by **job posting date** (`posted_date_estimated`), not by proposal generation time. This uses the same `parse_job_date()` helper as the Jobs tab.
+
+**DataFrame indexing**: When passing filtered DataFrames to analytics modules, use `.loc[]` (label-based) not `.iloc[]` (positional) for index lookups from `iterrows()`, since filtered DataFrames have non-contiguous indices.
+
+## Email Notifications
+
+`notifier.py` sends HTML email digests via Gmail SMTP. Each job card in the email includes: title with Upwork link, budget, match score, job metadata (experience level, duration, competition, posted time), job description preview, AI summary, skills tags, key tools, and client info. The proposal text is **not** included in emails -- users review proposals in the dashboard. Falls back to saving HTML files in `data/emails/` if SMTP fails.
+
 ## Error Handling
 
 Specific exception types are used throughout (no bare `except Exception` except in `config_loader.py` for DB fallback and `main.py` top-level monitor catch). Key exception types by module:
