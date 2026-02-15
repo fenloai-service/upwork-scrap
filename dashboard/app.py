@@ -3,7 +3,10 @@
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# Bangladesh Standard Time (UTC+6)
+BST = timezone(timedelta(hours=6))
 from pathlib import Path
 
 # Add project root to Python path for imports
@@ -527,8 +530,8 @@ def filter_proposals_by_criteria(df, date_filter: dict, score_range: tuple, stat
     if status_filter and 'status' in filtered.columns:
         filtered = filtered[filtered['status'].isin(status_filter)]
 
-    # Apply date filter (on generated_at)
-    if date_filter["mode"] != "all" and date_filter["start_date"] and 'generated_at' in filtered.columns:
+    # Apply date filter (on job posting date, not proposal generation date)
+    if date_filter["mode"] != "all" and date_filter["start_date"] and 'posted_date_estimated' in filtered.columns:
         start_dt = datetime.combine(
             date_filter["start_date"] if hasattr(date_filter["start_date"], 'year') else date_filter["start_date"],
             datetime.min.time()
@@ -539,16 +542,11 @@ def filter_proposals_by_criteria(df, date_filter: dict, score_range: tuple, stat
         )
 
         def is_in_range(row):
-            date_str = row.get("generated_at", "")
+            date_str = row.get("posted_date_estimated", "")
             if not date_str:
                 return False
-            try:
-                gen_date = datetime.fromisoformat(date_str)
-                # Strip timezone to compare with naive start_dt/end_dt
-                gen_date = gen_date.replace(tzinfo=None)
-                return start_dt <= gen_date <= end_dt
-            except (ValueError, TypeError):
-                return False
+            job_date = parse_job_date(date_str)
+            return start_dt <= job_date <= end_dt
 
         filtered = filtered[filtered.apply(is_in_range, axis=1)]
 
@@ -572,7 +570,10 @@ def render_monitor_health_header():
         return
 
     timestamp = datetime.fromisoformat(health['timestamp'])
-    time_diff = datetime.now() - timestamp
+    # Make timestamp naive for comparison if it has timezone info
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.replace(tzinfo=None)
+    time_diff = datetime.now(BST).replace(tzinfo=None) - timestamp
     hours_ago = time_diff.total_seconds() / 3600
 
     status = health['status']
@@ -648,27 +649,28 @@ def render_sidebar(df):
     start_date = None
     end_date = None
 
+    now_bst = datetime.now(BST)
     if date_mode == "last_2":
-        start_date = datetime.now() - timedelta(days=2)
-        end_date = datetime.now()
+        start_date = now_bst - timedelta(days=2)
+        end_date = now_bst
     elif date_mode == "last_7":
-        start_date = datetime.now() - timedelta(days=7)
-        end_date = datetime.now()
+        start_date = now_bst - timedelta(days=7)
+        end_date = now_bst
     elif date_mode == "last_30":
-        start_date = datetime.now() - timedelta(days=30)
-        end_date = datetime.now()
+        start_date = now_bst - timedelta(days=30)
+        end_date = now_bst
     elif date_mode == "custom":
         col1, col2 = st.sidebar.columns(2)
         with col1:
             start_date = st.date_input(
                 "From",
-                value=datetime.now() - timedelta(days=30),
+                value=now_bst - timedelta(days=30),
                 key="global_start_date"
             )
         with col2:
             end_date = st.date_input(
                 "To",
-                value=datetime.now(),
+                value=now_bst,
                 key="global_end_date"
             )
 
@@ -1821,7 +1823,7 @@ def render_favorites_tab():
     col1.metric("Favorite Jobs", len(fav_df))
     col2.metric("Avg Match Score", f"{fav_df['score'].mean():.1f}")
     col3.metric("High Match", len(fav_df[fav_df['score'] >= 70]))
-    col4.metric("Added Today", len(fav_df[fav_df['favorited_at'].str.contains(datetime.now().strftime('%Y-%m-%d'))]))
+    col4.metric("Added Today", len(fav_df[fav_df['favorited_at'].str.contains(datetime.now(BST).strftime('%Y-%m-%d'))]))
 
     # Export button
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -2566,7 +2568,7 @@ def main():
 
     # Footer
     st.markdown("---")
-    st.markdown(f"*Last updated: {datetime.now():%Y-%m-%d %H:%M:%S}* | "
+    st.markdown(f"*Last updated: {datetime.now(BST):%Y-%m-%d %H:%M:%S} BST* | "
                 f"*Total jobs in database: {len(df):,}*")
 
 
