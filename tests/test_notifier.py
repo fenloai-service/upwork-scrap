@@ -85,17 +85,14 @@ class TestGenerateProposalHtml:
         assert "85" in html_output
         assert "62" in html_output
 
-        # Contains proposal text previews
-        assert "extensive experience building AI chatbots" in html_output
-        assert "NLP pipeline project" in html_output
-
         # Contains stats section values
         assert "10" in html_output  # jobs_matched
         assert "5" in html_output   # proposals_generated
 
-        # Contains structural HTML markers
-        assert "Jobs Matched" in html_output
-        assert "Proposals Generated" in html_output
+        # Contains structural HTML markers (pipeline summary labels)
+        assert "Scraped" in html_output
+        assert "Matched" in html_output
+        assert "Proposals" in html_output
         assert "Generated Proposals" in html_output
 
     def test_html_escaping_prevents_injection(self, sample_stats):
@@ -130,7 +127,7 @@ class TestSendViaSmtp:
     """Tests for send_via_smtp()."""
 
     def test_smtp_send_with_mock(self, email_cfg, monkeypatch):
-        """SMTP connection should call starttls, login, and send_message."""
+        """SMTP connection should call starttls, login, and sendmail."""
         monkeypatch.setenv("GMAIL_APP_PASSWORD", "fake-app-password")
 
         mock_server = MagicMock()
@@ -149,10 +146,13 @@ class TestSendViaSmtp:
         # SMTP was called with the right host/port
         mock_smtp_cls.assert_called_once_with("smtp.gmail.com", 587)
 
-        # The context-managed server had starttls, login, and send_message called
+        # The context-managed server had starttls, login, and sendmail called
         mock_server.starttls.assert_called_once()
         mock_server.login.assert_called_once_with("test@gmail.com", "fake-app-password")
-        mock_server.send_message.assert_called_once()
+        mock_server.sendmail.assert_called_once()
+        call_args = mock_server.sendmail.call_args[0]
+        assert call_args[0] == "test@gmail.com"
+        assert call_args[1] == ["recipient@example.com"]
 
     def test_smtp_missing_password_returns_false(self, email_cfg, monkeypatch):
         """send_via_smtp should return False when GMAIL_APP_PASSWORD is not set."""

@@ -2461,7 +2461,20 @@ def render_profile_proposals_tab():
         smtp_user = st.text_input("SMTP Username", value=smtp.get("username", ""), key="smtp_user")
     with col2:
         smtp_port = st.number_input("SMTP Port", min_value=1, value=smtp.get("port", 587), key="smtp_port")
-        recipient = st.text_input("Recipient Email", value=notif.get("recipient", ""), key="smtp_recip")
+        # Support both 'recipients' (list) and legacy 'recipient' (string)
+        existing_recipients = notif.get("recipients", [])
+        if not existing_recipients:
+            legacy = notif.get("recipient", "")
+            existing_recipients = [legacy] if legacy else []
+        elif isinstance(existing_recipients, str):
+            existing_recipients = [existing_recipients]
+        recipients_text = st.text_area(
+            "Recipient Emails (one per line)",
+            value="\n".join(existing_recipients),
+            height=80,
+            key="smtp_recip",
+        )
+        recipients_list = [e.strip() for e in recipients_text.strip().split("\n") if e.strip()]
 
     min_proposals = st.number_input("Min proposals to send email", min_value=0,
                                     value=notif.get("min_proposals_to_send", 1), key="email_min")
@@ -2476,7 +2489,7 @@ def render_profile_proposals_tab():
                     "username": smtp_user,
                 },
                 "notifications": {
-                    "recipient": recipient,
+                    "recipients": recipients_list,
                     "send_immediately": notif.get("send_immediately", True),
                     "min_proposals_to_send": min_proposals,
                     "max_proposals_per_email": notif.get("max_proposals_per_email", 10),

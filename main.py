@@ -636,6 +636,9 @@ def _stage_notify(stats: dict, start_time: float):
         recent_proposals = [p for p in all_proposals if p.get('status') == 'pending_review']
 
         monitor_stats = {
+            'jobs_scraped': stats.get('jobs_scraped', 0),
+            'jobs_new': stats.get('jobs_new', 0),
+            'jobs_classified': stats.get('jobs_classified', 0),
             'jobs_matched': stats['jobs_matched'],
             'proposals_generated': stats['proposals_generated'],
             'proposals_failed': stats['proposals_failed'],

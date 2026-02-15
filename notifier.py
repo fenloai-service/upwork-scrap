@@ -43,8 +43,13 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
     Returns:
         HTML string for email body
     """
+    jobs_scraped = monitor_stats.get('jobs_scraped', 0)
+    jobs_new = monitor_stats.get('jobs_new', 0)
+    jobs_classified = monitor_stats.get('jobs_classified', 0)
     jobs_matched = monitor_stats.get('jobs_matched', 0)
     proposals_generated = monitor_stats.get('proposals_generated', 0)
+    duration_seconds = monitor_stats.get('duration_seconds', 0)
+    duration_str = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A"
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     # Get email config and dashboard URL
@@ -74,7 +79,7 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         # Get job details from fetched data
         job = job_details_map.get(job_uid, {})
         job_title = html.escape(job.get('title', f'Job {job_uid[:8]}'))
-        job_url = job.get('url', f"https://www.upwork.com/jobs/{job_uid}")
+        job_url = html.escape(job.get('url', f"https://www.upwork.com/jobs/{job_uid}"))
 
         # Job description (truncated)
         description = job.get('description', '')
@@ -237,24 +242,44 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
                 </p>
             </div>
 
-            <!-- Stats -->
+            <!-- Pipeline Summary -->
             <div style="padding: 20px; background: #fafafa; border-bottom: 1px solid #eee;">
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
-                    <div style="text-align: center; padding: 15px; background: white; border-radius: 8px;">
-                        <div style="font-size: 32px; font-weight: bold; color: #1976d2;">
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #546e7a;">
+                            {jobs_scraped}
+                        </div>
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Scraped</div>
+                    </div>
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #0288d1;">
+                            {jobs_new}
+                        </div>
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">New Jobs</div>
+                    </div>
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #7b1fa2;">
+                            {jobs_classified}
+                        </div>
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Classified</div>
+                    </div>
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #1976d2;">
                             {jobs_matched}
                         </div>
-                        <div style="color: #666; font-size: 14px; margin-top: 5px;">
-                            Jobs Matched
-                        </div>
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Matched</div>
                     </div>
-                    <div style="text-align: center; padding: 15px; background: white; border-radius: 8px;">
-                        <div style="font-size: 32px; font-weight: bold; color: #14a800;">
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #14a800;">
                             {proposals_generated}
                         </div>
-                        <div style="color: #666; font-size: 14px; margin-top: 5px;">
-                            Proposals Generated
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Proposals</div>
+                    </div>
+                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
+                        <div style="font-size: 28px; font-weight: bold; color: #f57c00;">
+                            {duration_str}
                         </div>
+                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Duration</div>
                     </div>
                 </div>
             </div>
@@ -305,11 +330,17 @@ def send_via_smtp(subject: str, html_body: str, email_cfg: dict) -> bool:
     smtp_username = smtp_cfg.get('username')
     smtp_password = os.getenv('GMAIL_APP_PASSWORD')
 
-    recipient = notifications_cfg.get('recipient')
+    # Support both 'recipients' (list) and legacy 'recipient' (string)
+    recipients = notifications_cfg.get('recipients')
+    if not recipients:
+        legacy = notifications_cfg.get('recipient')
+        recipients = [legacy] if legacy else []
+    elif isinstance(recipients, str):
+        recipients = [recipients]
 
     # Validate
-    if not smtp_username or not recipient:
-        print("❌ SMTP username or recipient not configured in config/email_config.yaml")
+    if not smtp_username or not recipients:
+        print("❌ SMTP username or recipients not configured in config/email_config.yaml")
         return False
 
     if not smtp_password:
@@ -322,7 +353,7 @@ def send_via_smtp(subject: str, html_body: str, email_cfg: dict) -> bool:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From'] = smtp_username
-        msg['To'] = recipient
+        msg['To'] = ", ".join(recipients)
 
         # Attach HTML body
         msg.attach(MIMEText(html_body, 'html'))
@@ -331,9 +362,9 @@ def send_via_smtp(subject: str, html_body: str, email_cfg: dict) -> bool:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(smtp_username, smtp_password)
-            server.send_message(msg)
+            server.sendmail(smtp_username, recipients, msg.as_string())
 
-        print(f"✅ Email sent successfully to {recipient}")
+        print(f"✅ Email sent successfully to {', '.join(recipients)}")
         return True
 
     except smtplib.SMTPAuthenticationError:
