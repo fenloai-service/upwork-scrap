@@ -1725,7 +1725,7 @@ def render_proposal_card(prop, read_only=False):
                 st.markdown(f"📊 <span style='color: {char_color};'>{edit_word_count} words • "
                             f"{edit_char_count}/5000 characters</span>", unsafe_allow_html=True)
 
-                if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", use_container_width=True):
+                if st.button("💾 Save Changes", key=f"save_proposal_{job_uid}", use_container_width=True, type="primary"):
                     if update_proposal_text(proposal_id, edited_proposal):
                         st.success("✅ Proposal saved!")
                         st.session_state[edit_key] = False
@@ -1883,7 +1883,7 @@ def render_favorites_tab():
                 height=100
             )
 
-            if st.button("💾 Save Notes", key=f"save_notes_{job_uid}"):
+            if st.button("💾 Save Notes", key=f"save_notes_{job_uid}", type="primary"):
                 if update_favorite_notes(job_uid, new_notes):
                     st.success("✅ Notes saved!")
                     st.rerun()
@@ -1957,7 +1957,7 @@ def render_scraping_ai_tab():
         st.caption(f"Pipeline will run every {mins}m")
 
     # ── Save Scraping Config ─────────────────────────────────────────────────
-    if st.button("Save Scraping Settings", key="save_scraping"):
+    if st.button("Save Scraping Settings", key="save_scraping", type="primary"):
         new_keywords = [k.strip() for k in keywords_text.strip().split("\n") if k.strip()]
         new_scraping = {
             "scraping": {
@@ -2070,7 +2070,7 @@ def render_scraping_ai_tab():
                 st.text("API Key: Built-in (no env var needed)")
 
     # Save AI config
-    if st.button("Save AI Settings", key="save_ai"):
+    if st.button("Save AI Settings", key="save_ai", type="primary"):
         # Preserve existing fallback chains when saving
         class_cfg = {"provider": class_provider, "model": class_model}
         prop_cfg = {"provider": prop_provider, "model": prop_model}
@@ -2146,7 +2146,7 @@ def render_profile_proposals_tab():
         help="These skills are used for job matching and scoring"
     )
 
-    if st.button("Save Profile", key="save_profile"):
+    if st.button("Save Profile", key="save_profile", type="primary"):
         new_profile = {
             "profile": {
                 "name": name,
@@ -2206,7 +2206,7 @@ def render_profile_proposals_tab():
         save_yaml_config("projects.yaml", {"projects": projects})
         st.rerun()
 
-    if st.button("Save All Projects", key="save_projects"):
+    if st.button("Save All Projects", key="save_projects", type="primary"):
         if save_yaml_config("projects.yaml", {"projects": projects}):
             st.success(f"Saved {len(projects)} projects!")
             st.cache_data.clear()
@@ -2244,7 +2244,7 @@ def render_profile_proposals_tab():
         key="guide_emphasis"
     )
 
-    if st.button("Save Guidelines", key="save_guidelines"):
+    if st.button("Save Guidelines", key="save_guidelines", type="primary"):
         new_guidelines = {
             "guidelines": {
                 "tone": tone,
@@ -2396,7 +2396,7 @@ def render_profile_proposals_tab():
         save_to_db = st.checkbox("Save to Database", value=True, key="pref_save_db",
                                  help="Store in database (recommended). Uncheck to save to YAML only.")
 
-    if st.button("Save Job Preferences", key="save_prefs"):
+    if st.button("Save Job Preferences", key="save_prefs", type="primary"):
         new_prefs = {
             "preferences": {
                 "categories": [s.strip() for s in categories.split("\n") if s.strip()],
@@ -2479,7 +2479,7 @@ def render_profile_proposals_tab():
     min_proposals = st.number_input("Min proposals to send email", min_value=0,
                                     value=notif.get("min_proposals_to_send", 1), key="email_min")
 
-    if st.button("Save Email Settings", key="save_email"):
+    if st.button("Save Email Settings", key="save_email", type="primary"):
         new_email = {
             "email": {
                 "enabled": email_enabled,
