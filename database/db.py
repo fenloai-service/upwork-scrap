@@ -810,6 +810,7 @@ def get_proposals(status: str = None, limit: int = None, offset: int = 0) -> lis
                 j.experience_level as job_experience_level,
                 j.proposals as job_proposals,
                 j.client_total_spent as job_client_total_spent,
+                j.category as job_category,
                 j.categories as job_categories,
                 j.key_tools as job_key_tools,
                 j.ai_summary as job_ai_summary,

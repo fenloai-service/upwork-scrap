@@ -308,9 +308,9 @@ def filter_jobs(df, filters):
     if filters.get('min_score', 0) > 0:
         filtered = filtered[filtered['score'] >= filters['min_score']]
 
-    # Category
+    # Category (rule-based classification)
     if filters.get('category'):
-        filtered = filtered[filtered['categories'].apply(lambda cats: filters['category'] in cats)]
+        filtered = filtered[filtered['category'] == filters['category']]
 
     # Key tool
     if filters.get('key_tool'):
@@ -361,17 +361,9 @@ def filter_proposals(df, filters):
     if filters.get('min_score', 0) > 0:
         filtered = filtered[filtered['match_score'] >= filters['min_score']]
 
-    # Category
-    if filters.get('category') and 'job_categories' in filtered.columns:
-        def _cat_match(val):
-            if not val:
-                return False
-            try:
-                cats = json.loads(val) if isinstance(val, str) else val
-                return filters['category'] in cats
-            except (json.JSONDecodeError, TypeError):
-                return False
-        filtered = filtered[filtered['job_categories'].apply(_cat_match)]
+    # Category (rule-based classification)
+    if filters.get('category') and 'job_category' in filtered.columns:
+        filtered = filtered[filtered['job_category'] == filters['category']]
 
     # Key tool
     if filters.get('key_tool') and 'job_key_tools' in filtered.columns:
@@ -702,10 +694,9 @@ def render_sidebar(df):
     filters['score_range'] = score_range
     filters['min_score'] = score_range[0]  # Keep for backward compatibility
 
-    # Category dropdown
-    all_categories = sorted(set(
-        cat for cats in df['categories'].dropna() for cat in cats
-    ))
+    # Category dropdown (uses rule-based classification for clean grouping)
+    all_categories = sorted(df['category'].dropna().unique())
+    all_categories = [c for c in all_categories if c]  # Remove empty strings
     if all_categories:
         category_options = ['All Categories'] + all_categories
         selected_cat = st.sidebar.selectbox("Category", category_options)
