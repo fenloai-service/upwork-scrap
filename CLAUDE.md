@@ -137,9 +137,9 @@ Separate model configs for `classification` vs `proposal_generation` tasks, each
 - **Cloud**: Set `DATABASE_URL` env var for PostgreSQL (Neon). Dashboard reads from Streamlit secrets (`.streamlit/secrets.toml`).
 - **Adapter**: `database/adapter.py` handles DDL differences, placeholder conversion, connection wrapping.
 
-**Tables**: `jobs` (primary, keyed on `uid`), `proposals` (generated proposals with status/rating), `favorites` (bookmarked jobs with notes), `settings` (key-value config store for dashboard).
+**Tables**: `jobs` (primary, keyed on `uid`), `proposals` (generated proposals with status/rating), `favorites` (bookmarked jobs with notes), `settings` (key-value config store for dashboard), `scrape_runs` (pipeline run history with stats/duration/status).
 
-**Key DB functions in `database/db.py`**: `init_db()`, `upsert_jobs()`, `get_all_jobs(limit, offset)`, `get_unclassified_jobs()`, `update_job_classifications()` (transactional with rollback), `insert_proposal()`, `get_proposals(status, limit, offset)`, `update_proposal_status()`, `update_proposal_rating()`, `get_proposal_analytics()`, `add_favorite()`, `get_favorites()`, `get_setting()`, `save_setting()`, `load_config_from_db()`.
+**Key DB functions in `database/db.py`**: `init_db()`, `upsert_jobs()`, `get_all_jobs(limit, offset)`, `get_unclassified_jobs()`, `update_job_classifications()` (transactional with rollback), `insert_proposal()`, `get_proposals(status, limit, offset)`, `update_proposal_status()`, `update_proposal_rating()`, `get_proposal_analytics()`, `add_favorite()`, `get_favorites()`, `get_setting()`, `save_setting()`, `load_config_from_db()`, `insert_scrape_run()`, `get_scrape_runs(limit)`.
 
 **Indexes**: `idx_jobs_category` on `jobs(category)`, `idx_proposals_status_generated` on `proposals(status, generated_at)`.
 
@@ -194,7 +194,7 @@ Each stage function is independently testable with isolated error handling. Logs
 
 ## Dashboard
 
-`dashboard/app.py` is the main Streamlit dashboard with 6 tabs: Proposals, Jobs, Favorites, Analytics, Scraping & AI, Profile & Proposals. Supporting modules:
+`dashboard/app.py` is the main Streamlit dashboard with 7 tabs: Proposals, Jobs, Favorites, Analytics, Scrape History, Scraping & AI, Profile & Proposals. Supporting modules:
 - `dashboard/analytics.py` -- DataFrame analytics (skill frequency, distributions)
 - `dashboard/skill_explorer.py` -- Interactive skill domain analysis with generic-term filtering
 - `dashboard/tech_stacks.py` -- Technology stack pattern detection (MERN, Python ML, etc.)
@@ -256,6 +256,15 @@ sshpass -p "asdf" ssh npc@100.98.24.98 \
 sshpass -p "asdf" ssh npc@100.98.24.98 \
     'echo "asdf" | sudo -S systemctl restart upwork-scraper upwork-dashboard'
 ```
+
+**Post-deployment verification (REQUIRED)**:
+After every deployment, you MUST open the live dashboard in a browser (using Playwright MCP) and verify the changes work:
+1. Navigate to `http://100.98.24.98:8501`
+2. Wait for the page to fully load (wait for "Loaded" text, may take 60-120s on cold start)
+3. Click through to the relevant tab(s) that were changed
+4. Take a screenshot to confirm the UI renders correctly
+5. Check server logs (`/var/log/upwork-scrap/dashboard.log`) if anything looks wrong
+Never skip this step — silent failures in Streamlit are common (empty tabs, missing imports, DB errors).
 
 **Key server paths**:
 - Logs: `/var/log/upwork-scrap/scraper.log`, `dashboard.log`

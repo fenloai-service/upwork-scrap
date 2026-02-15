@@ -171,9 +171,36 @@ def _init_db_sqlite():
             )
         """)
 
+        # Scrape runs history table
+        _init_scrape_runs_sqlite(conn)
+
         conn.commit()
     finally:
         conn.close()
+
+
+def _init_scrape_runs_sqlite(conn):
+    """Create scrape_runs table for SQLite."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            duration_seconds REAL,
+            status TEXT NOT NULL,
+            jobs_scraped INTEGER DEFAULT 0,
+            jobs_new INTEGER DEFAULT 0,
+            jobs_classified INTEGER DEFAULT 0,
+            jobs_matched INTEGER DEFAULT 0,
+            proposals_generated INTEGER DEFAULT 0,
+            proposals_failed INTEGER DEFAULT 0,
+            error TEXT,
+            stages_completed TEXT DEFAULT '[]'
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_runs_timestamp "
+        "ON scrape_runs(timestamp)"
+    )
 
 
 def _init_db_postgres():
@@ -283,9 +310,36 @@ def _init_db_postgres():
             )
         """)
 
+        # Scrape runs history table
+        _init_scrape_runs_postgres(conn)
+
         conn.commit()
     finally:
         conn.close()
+
+
+def _init_scrape_runs_postgres(conn):
+    """Create scrape_runs table for PostgreSQL."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id SERIAL PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            duration_seconds DOUBLE PRECISION,
+            status TEXT NOT NULL,
+            jobs_scraped INTEGER DEFAULT 0,
+            jobs_new INTEGER DEFAULT 0,
+            jobs_classified INTEGER DEFAULT 0,
+            jobs_matched INTEGER DEFAULT 0,
+            proposals_generated INTEGER DEFAULT 0,
+            proposals_failed INTEGER DEFAULT 0,
+            error TEXT,
+            stages_completed TEXT DEFAULT '[]'
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_runs_timestamp "
+        "ON scrape_runs(timestamp)"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1125,3 +1179,49 @@ def load_config_from_db(config_name: str) -> dict | None:
     except (sqlite3.Error, json.JSONDecodeError, KeyError, OSError, RuntimeError) as e:
         log.debug(f"DB config lookup failed for '{config_name}': {e}")
         return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Scrape Runs History
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def insert_scrape_run(timestamp: str, duration_seconds: float, status: str,
+                      jobs_scraped: int = 0, jobs_new: int = 0,
+                      jobs_classified: int = 0, jobs_matched: int = 0,
+                      proposals_generated: int = 0, proposals_failed: int = 0,
+                      error: str = None, stages_completed: str = "[]"):
+    """Insert a scrape run record into the history table."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO scrape_runs "
+            "(timestamp, duration_seconds, status, jobs_scraped, jobs_new, "
+            "jobs_classified, jobs_matched, proposals_generated, proposals_failed, "
+            "error, stages_completed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (timestamp, duration_seconds, status, jobs_scraped, jobs_new,
+             jobs_classified, jobs_matched, proposals_generated, proposals_failed,
+             error, stages_completed),
+        )
+        conn.commit()
+    except (*_INTEGRITY_ERRORS, *_OPERATIONAL_ERRORS) as e:
+        log.error(f"Failed to insert scrape run: {e}")
+    finally:
+        conn.close()
+
+
+def get_scrape_runs(limit: int = 50) -> list[dict]:
+    """Fetch recent scrape runs ordered by timestamp DESC."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, timestamp, duration_seconds, status, "
+            "jobs_scraped, jobs_new, jobs_classified, jobs_matched, "
+            "proposals_generated, proposals_failed, error, stages_completed "
+            "FROM scrape_runs ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        return _rows_to_dicts(cur.fetchall())
+    finally:
+        conn.close()

@@ -58,6 +58,8 @@ from database.db import (
     get_proposal_analytics,
     get_proposal_stats,
     save_setting,
+    get_scrape_runs,
+    insert_scrape_run,
 )
 from dashboard.analytics import (
     jobs_to_dataframe,
@@ -202,7 +204,7 @@ def load_jobs_data():
     # Parse classification fields
     for col in ['categories', 'key_tools']:
         if col in df.columns:
-            df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else (x or []))
+            df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) and x.strip() else (x if isinstance(x, list) else []))
 
     # Add unified match score using matcher.score_job()
     try:
@@ -2491,6 +2493,168 @@ def render_profile_proposals_tab():
 # Main App
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Scrape History Tab
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _backfill_scrape_runs():
+    """Seed scrape_runs table from last_run_status.json if table is empty."""
+    try:
+        existing = get_scrape_runs(limit=1)
+        if existing:
+            return  # Already has data
+
+        health = load_monitor_health()
+        if not health:
+            return
+
+        insert_scrape_run(
+            timestamp=health.get("timestamp", datetime.now(BST).isoformat()),
+            duration_seconds=health.get("duration_seconds", 0),
+            status=health.get("status", "unknown"),
+            jobs_scraped=health.get("jobs_scraped", 0),
+            jobs_new=health.get("jobs_new", 0),
+            jobs_classified=health.get("jobs_classified", 0),
+            jobs_matched=health.get("jobs_matched", 0),
+            proposals_generated=health.get("proposals_generated", 0),
+            proposals_failed=health.get("proposals_failed", 0),
+            error=health.get("error"),
+            stages_completed=json.dumps(health.get("stages_completed", [])),
+        )
+        log.info("Backfilled scrape_runs from last_run_status.json")
+    except (OSError, KeyError) as e:
+        log.warning(f"Failed to backfill scrape_runs: {e}")
+
+
+def render_scrape_history_tab():
+    """Render the Scrape History tab with run summaries, charts, and table."""
+    st.header("📜 Scrape History")
+
+    # Backfill from JSON on first load
+    _backfill_scrape_runs()
+
+    runs = get_scrape_runs(limit=100)
+
+    if not runs:
+        st.info("No scrape runs recorded yet. Run the monitor pipeline to generate history.")
+        st.code("python main.py monitor --new")
+        return
+
+    runs_df = pd.DataFrame(runs)
+    runs_df["timestamp"] = pd.to_datetime(runs_df["timestamp"])
+
+    # ── Summary Metrics ──────────────────────────────────────────────────
+    st.subheader("Summary")
+    col1, col2, col3, col4 = st.columns(4)
+
+    total_runs = len(runs_df)
+    success_count = len(runs_df[runs_df["status"] == "success"])
+    success_rate = (success_count / total_runs * 100) if total_runs > 0 else 0
+    avg_duration = runs_df["duration_seconds"].mean() if total_runs > 0 else 0
+    total_scraped = runs_df["jobs_scraped"].sum()
+
+    col1.metric("Total Runs", f"{total_runs:,}")
+    col2.metric("Success Rate", f"{success_rate:.0f}%")
+    col3.metric("Avg Duration", f"{avg_duration:.0f}s")
+    col4.metric("Total Jobs Scraped", f"{total_scraped:,}")
+
+    # ── Jobs Scraped Timeline ────────────────────────────────────────────
+    st.subheader("Jobs Scraped Over Time")
+    timeline_df = runs_df.sort_values("timestamp")
+    fig_timeline = px.bar(
+        timeline_df,
+        x="timestamp",
+        y="jobs_scraped",
+        color="status",
+        color_discrete_map={
+            "success": "#2ecc71",
+            "partial_failure": "#f39c12",
+            "failure": "#e74c3c",
+        },
+        labels={"timestamp": "Run Time", "jobs_scraped": "Jobs Scraped", "status": "Status"},
+    )
+    fig_timeline.update_layout(
+        xaxis_title="Run Time",
+        yaxis_title="Jobs Scraped",
+        height=350,
+        margin=dict(l=40, r=20, t=20, b=40),
+    )
+    st.plotly_chart(fig_timeline, use_container_width=True)
+
+    # ── Status Breakdown & Duration Trend (side by side) ─────────────────
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.subheader("Status Breakdown")
+        status_counts = runs_df["status"].value_counts().reset_index()
+        status_counts.columns = ["status", "count"]
+        fig_pie = px.pie(
+            status_counts,
+            values="count",
+            names="status",
+            color="status",
+            color_discrete_map={
+                "success": "#2ecc71",
+                "partial_failure": "#f39c12",
+                "failure": "#e74c3c",
+            },
+        )
+        fig_pie.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20))
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_right:
+        st.subheader("Duration Trend")
+        fig_duration = px.line(
+            timeline_df,
+            x="timestamp",
+            y="duration_seconds",
+            labels={"timestamp": "Run Time", "duration_seconds": "Duration (s)"},
+            markers=True,
+        )
+        fig_duration.update_layout(
+            height=300,
+            margin=dict(l=40, r=20, t=20, b=40),
+        )
+        st.plotly_chart(fig_duration, use_container_width=True)
+
+    # ── Recent Runs Table ────────────────────────────────────────────────
+    st.subheader("Recent Runs")
+
+    display_df = runs_df.copy()
+    display_df["timestamp"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    display_df["duration"] = display_df["duration_seconds"].apply(
+        lambda s: f"{s:.0f}s" if pd.notna(s) else "—"
+    )
+    display_df["stages"] = display_df["stages_completed"].apply(
+        lambda s: ", ".join(json.loads(s)) if s and s != "[]" else "—"
+    )
+
+    table_cols = [
+        "timestamp", "status", "duration", "jobs_scraped", "jobs_new",
+        "jobs_classified", "jobs_matched", "proposals_generated",
+        "proposals_failed", "stages",
+    ]
+    col_labels = {
+        "timestamp": "Time",
+        "status": "Status",
+        "duration": "Duration",
+        "jobs_scraped": "Scraped",
+        "jobs_new": "New",
+        "jobs_classified": "Classified",
+        "jobs_matched": "Matched",
+        "proposals_generated": "Proposals",
+        "proposals_failed": "Failed",
+        "stages": "Stages Completed",
+    }
+    st.dataframe(
+        display_df[table_cols].rename(columns=col_labels),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def main():
     """Main app entry point."""
 
@@ -2530,11 +2694,12 @@ def main():
         pending_proposals = 0
     proposals_label = f"✍️ Proposals ({pending_proposals})" if pending_proposals > 0 else "✍️ Proposals"
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         proposals_label,
         "📋 Jobs",
         fav_label,
         "📊 Analytics",
+        "📜 Scrape History",
         "Scraping & AI",
         "Profile & Proposals"
     ])
@@ -2552,9 +2717,12 @@ def main():
         render_analytics_tab(df, filters)
 
     with tab5:
-        render_scraping_ai_tab()
+        render_scrape_history_tab()
 
     with tab6:
+        render_scraping_ai_tab()
+
+    with tab7:
         render_profile_proposals_tab()
 
     # Footer

@@ -33,7 +33,7 @@ from playwright.async_api import async_playwright
 load_dotenv()
 
 import config
-from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count, get_all_job_uids
+from database.db import init_db, upsert_jobs, get_all_jobs, get_job_count, get_all_job_uids, insert_scrape_run
 from scraper.browser import launch_chrome_and_connect, get_page, human_delay, warmup_cloudflare
 from scraper.search import scrape_keyword, scrape_single_url
 from dashboard.html_report import generate_report
@@ -415,10 +415,12 @@ def write_health_check(status: str, duration_seconds: float, jobs_scraped: int =
                        jobs_new: int = 0, jobs_classified: int = 0, jobs_matched: int = 0,
                        proposals_generated: int = 0, proposals_failed: int = 0,
                        error_message: str = None, stages_completed: list = None):
-    """Write health check status to last_run_status.json."""
+    """Write health check status to last_run_status.json and persist to DB."""
+    timestamp = datetime.now().isoformat()
+    stages = stages_completed or []
     health_data = {
         "status": status,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": timestamp,
         "duration_seconds": round(duration_seconds, 2),
         "jobs_scraped": jobs_scraped,
         "jobs_new": jobs_new,
@@ -427,11 +429,29 @@ def write_health_check(status: str, duration_seconds: float, jobs_scraped: int =
         "proposals_generated": proposals_generated,
         "proposals_failed": proposals_failed,
         "error": error_message,
-        "stages_completed": stages_completed or [],
+        "stages_completed": stages,
     }
 
     with open(LAST_RUN_STATUS_FILE, "w") as f:
         json.dump(health_data, f, indent=2)
+
+    # Persist to scrape_runs table
+    try:
+        insert_scrape_run(
+            timestamp=timestamp,
+            duration_seconds=round(duration_seconds, 2),
+            status=status,
+            jobs_scraped=jobs_scraped,
+            jobs_new=jobs_new,
+            jobs_classified=jobs_classified,
+            jobs_matched=jobs_matched,
+            proposals_generated=proposals_generated,
+            proposals_failed=proposals_failed,
+            error=error_message,
+            stages_completed=json.dumps(stages),
+        )
+    except (sqlite3.Error, OSError) as e:
+        log.warning(f"Failed to persist scrape run to DB: {e}")
 
     log.info(f"Health check written: {status}")
 
