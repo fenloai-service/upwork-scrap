@@ -3,7 +3,9 @@
 import logging
 import random
 import asyncio
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -16,6 +18,38 @@ log = logging.getLogger(__name__)
 
 # Directory for Chrome user data when launching fresh
 CHROME_PROFILE_DIR = config.DATA_DIR / "chrome_profile"
+
+# Platform-specific Chrome candidate paths
+_CHROME_PATHS_MACOS = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+]
+
+_CHROME_PATHS_LINUX = [
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium",
+]
+
+
+def _find_chrome() -> str | None:
+    """Find Chrome binary: check platform-specific paths, then fall back to PATH."""
+    candidates = _CHROME_PATHS_MACOS if sys.platform == "darwin" else _CHROME_PATHS_LINUX
+
+    for p in candidates:
+        if Path(p).exists():
+            return p
+
+    # Fallback: search PATH
+    for name in ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    return None
 
 
 async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
@@ -37,35 +71,33 @@ async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
     # Launch Chrome with remote debugging
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Find Chrome path on macOS
-    chrome_paths = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    ]
-    chrome_path = None
-    for p in chrome_paths:
-        if Path(p).exists():
-            chrome_path = p
-            break
+    chrome_path = _find_chrome()
 
     if not chrome_path:
         raise RuntimeError(
-            "Chrome not found. Please install Google Chrome or run Chrome manually with:\n"
-            '  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" '
-            "--remote-debugging-port=9222"
+            "Chrome not found. Install Google Chrome or run it manually with:\n"
+            "  google-chrome-stable --remote-debugging-port=9222"
         )
+
+    chrome_args = [
+        chrome_path,
+        "--remote-debugging-port=9222",
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    # Linux-specific flags for running under Xvfb / headless servers
+    if sys.platform == "linux":
+        chrome_args += [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ]
+    chrome_args.append("about:blank")
 
     print(f"Launching Chrome: {Path(chrome_path).name}")
     subprocess.Popen(
-        [
-            chrome_path,
-            "--remote-debugging-port=9222",
-            f"--user-data-dir={CHROME_PROFILE_DIR}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "about:blank",
-        ],
+        chrome_args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -232,7 +264,15 @@ async def warmup_cloudflare(page: Page):
     except (PlaywrightError, OSError, RuntimeError) as e:
         log.error(f"Final check failed: {e}")
 
-    # Manual intervention fallback
+    # Manual intervention fallback — only if running interactively
+    if not sys.stdin.isatty():
+        log.error("Cloudflare challenge requires manual intervention but running non-interactively")
+        raise RuntimeError(
+            "Cloudflare challenge could not be solved automatically. "
+            "Run the first-time Cloudflare solve interactively via SSH X-forwarding "
+            "to cache tokens in data/chrome_profile/."
+        )
+
     print("⚠ Could not pass Cloudflare automatically.", flush=True)
     print("  The browser window is open — please solve the challenge manually,", flush=True)
     print("  then press Enter here to continue...", flush=True)

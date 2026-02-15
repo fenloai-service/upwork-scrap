@@ -1,0 +1,40 @@
+[Unit]
+Description=Upwork Job Scraper Monitor Pipeline
+After=network-online.target xvfb.service
+Wants=network-online.target
+Requires=xvfb.service
+
+[Service]
+Type=simple
+User=npc
+Group=npc
+WorkingDirectory=/home/npc/upwork-scrap
+
+# Virtual display for Chrome (Cloudflare bypass requires visible browser)
+Environment=DISPLAY=:99
+
+# Load DATABASE_URL, API keys, etc.
+EnvironmentFile=/home/npc/upwork-scrap/.env
+
+# Main command: continuous monitor pipeline with self-scheduling loop
+ExecStart=/home/npc/upwork-scrap/.venv/bin/python main.py monitor --new --loop
+
+# Restart policy
+Restart=on-failure
+RestartSec=60
+
+# Rate limiting: max 5 restarts per 10 minutes
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Logging
+StandardOutput=append:/var/log/upwork-scrap/scraper.log
+StandardError=append:/var/log/upwork-scrap/scraper.log
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/npc/upwork-scrap/data /var/log/upwork-scrap
+
+[Install]
+WantedBy=multi-user.target
