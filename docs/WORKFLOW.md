@@ -8,7 +8,7 @@
 > 5. Otherwise, implement the next pending step
 > 6. After completing a step, mark it `[x]` and update the "Last Updated" line
 >
-> **Last Updated:** 2026-02-11 — File reference audit: corrected all stale file paths to match actual repo structure (reporter/ → dashboard/, ai_classify.py → ai.py, classify.py → rules.py, analyzer/analyze.py → dashboard/analytics.py, root dashboard.py → dashboard/app.py). See Change Log at bottom.
+> **Last Updated:** 2026-02-12 — Added Phase 4 (Code Quality & Reliability) with 6 steps from post-implementation spec panel review. See Change Log at bottom.
 
 ---
 
@@ -44,6 +44,13 @@
 | 3.2 Ollama Fallback | F12 | ~3h |
 | 3.3 Quality Feedback Loop | F8 (quality) | ~3h |
 | **Phase 3 Total** | | **~9h** |
+| 4.1 Config Loader Extraction | SP-1, SP-4 (circular imports, 6x duplication) | ~2h |
+| 4.2 Error Handling Hardening | SP-3 (22+ bare except, silent failures) | ~2h |
+| 4.3 Database Robustness | SP-5, SP-8, SP-9 (transactions, queries, indexes) | ~3h |
+| 4.4 Monitor Pipeline Refactor | SP-2 (285-line god function, stage isolation) | ~5h |
+| 4.5 Security Fixes | SP-7, SP-10, SP-11 (path traversal, HTML injection, validation) | ~2h |
+| 4.6 Test Coverage Expansion | SP-6 (notifier, api_tracker, analytics untested) | ~4h |
+| **Phase 4 Total** | | **~18h** |
 
 ---
 
@@ -330,10 +337,203 @@ Every completed step must satisfy ALL of the following:
 
 ---
 
+## Phase 4 — Code Quality & Reliability (Spec Panel Findings)
+
+> **Origin:** Post-implementation spec panel review (2026-02-12) by Fowler (Architecture), Nygard (Reliability), Crispin (Testing), Wiegers (Requirements), Adzic (Testability). Overall quality score: 5.8/10. This phase addresses 30+ findings across architecture, error handling, testing, database, and security.
+
+### Traceability Matrix (Phase 4)
+
+| WORKFLOW Step | Spec Panel Finding(s) | Estimated Time |
+|---------------|----------------------|----------------|
+| 4.1 Config Loader Extraction | #1 Circular imports, #4 Config duplication (6x) | ~2h |
+| 4.2 Error Handling Hardening | #3 Bare except (22+), silent failures | ~2h |
+| 4.3 Database Robustness | #5 No transactions, #8 Unbounded queries, #9 Missing indexes | ~3h |
+| 4.4 Monitor Pipeline Refactor | #2 God function (285 lines), stage isolation | ~5h |
+| 4.5 Security Fixes | #7 Path traversal, #10 HTML injection, #11 No config validation | ~2h |
+| 4.6 Test Coverage Expansion | #6 Missing tests for notifier, api_tracker, analytics | ~4h |
+| **Phase 4 Total** | | **~18h** |
+
+### Rollback Plans (Phase 4)
+
+| Step | Rollback Action |
+|------|----------------|
+| 4.1 | Delete `config_loader.py`; revert imports in 6 modules to late-import pattern |
+| 4.2 | `git diff` each file; revert individual except blocks to `except Exception` |
+| 4.3 | Drop new indexes; revert `database/db.py` pagination params to no-limit defaults |
+| 4.4 | Delete `monitor/pipeline.py` (or `pipeline_orchestrator.py`); revert `main.py` to call `cmd_monitor_new()` directly |
+| 4.5 | Revert `dashboard/config_editor.py`, `notifier.py`, and any new validation modules |
+| 4.6 | Delete new test files: `tests/test_notifier.py`, `tests/test_api_tracker.py`, `tests/test_analytics.py` |
+
+---
+
+### Step 4.1 — Config Loader Extraction (~2 hours)
+- **Status:** [ ]
+- **Priority:** P0 (Critical)
+- **Findings:** Fowler #1 (circular imports), Fowler #4 (6x config duplication)
+- **Create:** `config_loader.py` (project root)
+- **Edit:** `config.py`, `matcher.py`, `proposal_generator.py`, `notifier.py`, `ai_client.py`, `dashboard/config_editor.py`
+- **Tasks:**
+  1. Create `config_loader.py` with a single function: `load_config(config_name: str, fallback_yaml_path: Path, required_keys: list[str] | None = None) -> dict`
+  2. Implementation: try DB (`database.db.load_config_from_db`) → try YAML (`yaml.safe_load`) → raise `ConfigError` with clear message. Log at WARNING level when falling back.
+  3. Replace the duplicated try-DB/try-YAML/except pattern in all 6 modules with a single call to `load_config()`
+  4. Move late `from database.db import load_config_from_db` into `config_loader.py` only — all other modules import from `config_loader` instead of `database.db`
+  5. Add `ConfigError` custom exception class for missing/invalid configs
+- **Verify:**
+  - `grep -rn "from database.db import load_config_from_db" *.py` returns only `config_loader.py`
+  - `python -c "from config_loader import load_config; print('loaded')"` succeeds
+  - `pytest tests/ -v` still passes (no regressions)
+  - `python -m py_compile config_loader.py matcher.py proposal_generator.py notifier.py ai_client.py config.py`
+
+---
+
+### Step 4.2 — Error Handling Hardening (~2 hours)
+- **Status:** [ ]
+- **Priority:** P0 (Critical)
+- **Findings:** Crispin #3 (22+ bare except Exception), silent failures
+- **Edit:** `main.py`, `scraper/browser.py`, `config.py`, `ai_client.py`, `proposal_generator.py`, `notifier.py`, `classifier/ai.py`
+- **Tasks:**
+  1. Audit all `except Exception` blocks (22+ instances). For each, replace with specific exception types:
+     - Network errors: `ConnectionError`, `TimeoutError`, `requests.RequestException`
+     - DB errors: `sqlite3.OperationalError`, `sqlite3.IntegrityError`
+     - Config errors: `FileNotFoundError`, `yaml.YAMLError`, `KeyError`
+     - API errors: `openai.APIError`, `openai.RateLimitError`
+  2. Add `log.warning()` to every fallback path (currently silent `pass` in config loaders)
+  3. Fix `scraper/browser.py` silent `except: pass` — add `log.debug()` at minimum
+  4. In `proposal_generator.py:build_proposal_prompt()`, wrap `json.loads(job.get("key_tools", "[]"))` in try/except `json.JSONDecodeError`
+  5. Keep a top-level `except Exception` only in `cmd_monitor_new()` as a last-resort catch, but log full traceback with `log.exception()`
+- **Verify:**
+  - `grep -cn "except Exception" *.py scraper/*.py classifier/*.py database/*.py dashboard/*.py` — count should drop from 22+ to ≤3 (only top-level pipeline catches)
+  - `grep -n "except.*pass" scraper/browser.py` — returns 0 matches (no more silent swallowing)
+  - `pytest tests/ -v` still passes
+
+---
+
+### Step 4.3 — Database Robustness (~3 hours)
+- **Status:** [ ]
+- **Priority:** P1 (High)
+- **Findings:** Nygard #5 (no transactions), Nygard #8 (unbounded queries), #9 (missing indexes)
+- **Edit:** `database/db.py`
+- **Tasks:**
+  1. **Add missing indexes** in `init_db()`:
+     - `CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category)` — dashboard filters on category frequently
+     - `CREATE INDEX IF NOT EXISTS idx_proposals_status_generated ON proposals(status, generated_at)` — proposal queries filter by status
+  2. **Add pagination** to `get_all_jobs()`: add optional `limit: int | None = None, offset: int = 0` parameters. Default behavior unchanged (no limit) for backward compatibility, but dashboard should pass `limit=500`.
+  3. **Add pagination** to `get_proposals()`: same pattern as above
+  4. **Wrap batch operations in transactions**: In `update_job_categories_batch()` and `generate_proposals_batch()` (in `proposal_generator.py`), use explicit `conn.execute("BEGIN")` / `conn.commit()` with rollback on error
+  5. **Add connection safety**: Verify all DB functions use try/finally with `conn.close()`. Fix any that don't.
+- **Verify:**
+  - `grep "idx_jobs_category" database/db.py` — index exists
+  - `grep "idx_proposals_status_generated" database/db.py` — index exists
+  - `grep -A2 "def get_all_jobs" database/db.py` — shows `limit` parameter
+  - `pytest tests/test_db.py tests/test_db_proposals.py -v` passes
+  - `python -c "from database.db import init_db; init_db(); print('indexes created')"` — no errors
+
+---
+
+### Step 4.4 — Monitor Pipeline Refactor (~5 hours)
+- **Status:** [ ]
+- **Priority:** P1 (High)
+- **Findings:** Nygard #2 (285-line god function), stage isolation, checkpoint/resume
+- **Edit:** `main.py`
+- **Tasks:**
+  1. Extract each pipeline stage from `cmd_monitor_new()` into separate functions:
+     - `_stage_scrape(keywords, pages) -> list[dict]`
+     - `_stage_classify(job_uids) -> int`
+     - `_stage_match(jobs, preferences) -> list[dict]`
+     - `_stage_generate_proposals(matched_jobs, dry_run) -> dict`
+     - `_stage_notify(proposals, stats, dry_run) -> bool`
+  2. Each stage function: accepts input, returns result, handles its own errors (catches specific exceptions, logs, returns partial result or raises)
+  3. `cmd_monitor_new()` becomes an orchestrator (~50 lines): iterates stages, passes outputs as inputs, accumulates stats, writes health check
+  4. Add checkpoint dict that tracks which stages completed — if a stage fails, the health check JSON records exactly which stage failed and what was already done
+  5. On re-run after failure, completed stages can be skipped if their outputs are still valid (e.g., scrape data already in DB, classification already done)
+- **Verify:**
+  - `cmd_monitor_new()` body is ≤80 lines (down from 285)
+  - Each `_stage_*` function has a docstring
+  - `python main.py monitor --new --dry-run` works identically to before
+  - `pytest tests/test_monitor_pipeline.py -v` passes
+  - `data/last_run_status.json` includes `stages_completed` list
+
+---
+
+### Step 4.5 — Security Fixes (~2 hours)
+- **Status:** [ ]
+- **Priority:** P2 (Medium)
+- **Findings:** Wiegers #7 (path traversal), #10 (HTML injection), #11 (no config validation)
+- **Edit:** `dashboard/config_editor.py`, `notifier.py`, `config_loader.py`
+- **Tasks:**
+  1. **Path traversal fix** in `dashboard/config_editor.py`: sanitize filename parameter before constructing path:
+     ```python
+     safe_name = Path(filename).name  # Strip directory components
+     filepath = config.CONFIG_DIR / safe_name
+     ```
+     Reject filenames containing `..` or `/` with a log warning.
+  2. **HTML injection fix** in `notifier.py`: escape all user-supplied content before embedding in HTML email:
+     ```python
+     from html import escape
+     # Apply escape() to job titles, descriptions, UIDs, proposal text
+     ```
+  3. **Config schema validation**: In `config_loader.py`, add optional `schema` parameter (dict of required keys + types). Validate after loading. Log warnings for missing optional keys, raise `ConfigError` for missing required keys.
+  4. Add validation schemas for `ai_models.yaml` (require `providers`, `classification`, `proposal_generation` keys) and `job_preferences.yaml` (require `budget`, `preferred_skills`, `threshold` keys)
+- **Verify:**
+  - `python -c "from dashboard.config_editor import get_config_files; print('safe')"` — loads without error
+  - Attempt to load `../../etc/passwd` through config_editor raises error (manual test or unit test)
+  - `grep "escape" notifier.py` — html.escape is used
+  - `pytest tests/ -v` passes with new validation
+
+---
+
+### Step 4.6 — Test Coverage Expansion (~4 hours)
+- **Status:** [ ]
+- **Priority:** P1 (High)
+- **Findings:** Crispin #6 (notifier, api_tracker, analytics untested), missing integration tests
+- **Create:** `tests/test_notifier.py`, `tests/test_api_tracker.py`, `tests/test_analytics.py`
+- **Edit:** `tests/test_proposal_generator.py` (add retry & rate limit tests)
+- **Tasks:**
+  1. **`tests/test_notifier.py`** (5 tests):
+     - SMTP send with mocked smtplib (verify email content, recipient, subject)
+     - Fallback to file when SMTP fails (verify HTML file created in `data/emails/`)
+     - Missing GMAIL_APP_PASSWORD returns error gracefully
+     - HTML escaping of job data in email body
+     - `last_email_status.json` written after send attempt
+  2. **`tests/test_api_tracker.py`** (3 tests):
+     - Track API call (insert + query count)
+     - Rate limit check (returns True when limit exceeded)
+     - Daily reset (calls from yesterday don't count)
+  3. **`tests/test_analytics.py`** (4 tests):
+     - `skill_frequency()` returns correct counts from sample DataFrame
+     - `hourly_rate_stats()` handles null/zero values
+     - Empty DataFrame edge case (no crash)
+     - `jobs_to_dataframe()` parses JSON skills column correctly
+  4. **Extend `tests/test_proposal_generator.py`**:
+     - Test retry logic: mock API to fail twice then succeed, verify 3 attempts made
+     - Test daily limit: mock `get_proposals_generated_today()` to return 20, verify generation skipped
+     - Test malformed JSON in `key_tools` field doesn't crash `build_proposal_prompt()`
+  5. **Integration test**: Add `tests/test_pipeline_integration.py` — end-to-end test with real SQLite DB (using `tmp_db` fixture), mocked scraper and API. Verify: jobs inserted → classified → matched → proposals generated → correct counts in health check JSON.
+- **Verify:**
+  - `pytest tests/ -v` exits with code 0, 0 failures
+  - `pytest tests/test_notifier.py tests/test_api_tracker.py tests/test_analytics.py -v` — all new tests pass
+  - No test requires network access, running Chrome, or real API keys
+
+---
+
+### Phase 4 Gate — Quality Baseline Met
+- **Status:** [ ]
+- **Verify:**
+  - `pytest tests/ -v` exits with code 0 (all tests pass, 0 failures, 0 skips)
+  - `grep -rn "except Exception" *.py scraper/*.py classifier/*.py database/*.py` — ≤3 occurrences (top-level catches only)
+  - `grep -rn "from database.db import load_config_from_db" *.py` — only in `config_loader.py`
+  - `cmd_monitor_new()` body ≤80 lines
+  - `python -m py_compile config_loader.py` succeeds
+  - No path traversal possible in config editor (manual test: `../../etc/passwd` rejected)
+- **Note:** Do not proceed to Phase 5 until all Phase 4 steps are `[x]` and this gate passes.
+
+---
+
 ## Change Log
 
 | Date | Round | IDs | Summary |
 |------|-------|-----|---------|
+| 2026-02-12 | Spec Panel Review (Post-Impl) | SP1-SP12 | Full codebase quality review by expert panel (Fowler, Nygard, Crispin, Wiegers, Adzic). Score: 5.8/10. Added Phase 4 with 6 steps targeting: circular import elimination (SP-1,4), error handling hardening (SP-3), DB transactions/indexes/pagination (SP-5,8,9), monitor pipeline refactor (SP-2), security fixes (SP-7,10,11), and test coverage expansion (SP-6). Estimated 18h total. |
 | 2026-02-11 | File Reference Audit | FA1-FA4 | Corrected all stale file paths to match actual repo structure: `reporter/dashboard.py` and `reporter/dashboard_v2.py` → `dashboard/app.py` (FA1), `classifier/ai_classify.py` → `classifier/ai.py` (FA2), `classifier/classify.py` → `classifier/rules.py` (FA3), `analyzer/analyze.py` → `dashboard/analytics.py` (FA4). Updated filename reference table, all step references, rollback plans, and verification commands. Step 1.6 rewritten: modifies existing `dashboard/app.py` instead of creating new root `dashboard.py`. |
 | 2026-02-11 | Spec Panel Round 6 | R1-R7 | Expert panel review (Wiegers, Adzic, Fowler, Nygard, Crispin): Added 2 example proposal outputs to F8 (R1), fixed retry timing PRD↔WORKFLOW mismatch from 5min/15min/1hr to 5s/15s/60s with two-tier strategy (R2), added F6.8 monitor health check with `last_run_status.json` + dashboard staleness warning (R3), expanded Step 1.7 to include integration test `test_monitor_pipeline.py` + `tests/fixtures/` + 2 additional matcher tests (R4), defined `match_reasons` JSON array-of-objects structure in F7.4 + added weight redistribution example for new client (R5), added FK CASCADE safety warning in Section 8 proposals schema (R6), defined proposal status state machine with valid/invalid transitions in F9.4 (R7) |
 | 2026-02-11 | Spec Panel Round 5 | C1-C4, M1-M7, N1-N8, S1-S4 | Resolved duplicate proposal strategy contradiction across 3 locations (C1), fixed F6 success criteria vs performance targets conflict (C2), defined daily cap timezone/reset boundary (C3), fixed Step 1.3 vs 1.6 scoring reuse contradiction (C4), neutral budget_fit for unknown jobs (M1), pipeline partial failure handling with retry logic (M2), comprehensive client_quality parsing rules (M3), safe dashboard rename ordering (M4), removed hardcoded test count from gates (M5), PID-based cross-platform lock file (M6), standardized proposal section naming (M7), fixed F6.6/F6.7 numbering (N1), deferred email_opened to Phase 4 (N2), commented out dead daily_summary config (N3), clarified ai_summary hard/soft limit (N4), removed vestigial grok_classify.py reference (N5), removed impl notes from F4.1 requirement (N6), added time estimates to all steps (N7), added git-push-DB sync warning (N8), added traceability matrix (S1), added glossary to PRD (S2), added rollback plans (S3), added global definition of done (S4) |

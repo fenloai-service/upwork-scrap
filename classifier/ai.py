@@ -13,7 +13,11 @@ import logging
 import time
 import os
 
+from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# Load environment variables from .env file
+load_dotenv()
 
 import config
 from ai_client import get_client
@@ -258,7 +262,7 @@ def classify_all():
             print(f"  {label}: JSON parse error — {e}")
             errors += 1
             failed_jobs.extend(batch)
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             log.error(f"{label}: {e}")
             print(f"  {label}: Error — {e}")
             errors += 1

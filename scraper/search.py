@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from playwright.async_api import Page
+from playwright.async_api import Page, Error as PlaywrightError
 
 import config
 from scraper.browser import human_delay, human_scroll
@@ -165,7 +165,7 @@ async def scrape_search_page(page: Page, keyword: str, page_num: int) -> dict:
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
-    except Exception as e:
+    except (PlaywrightError, OSError) as e:
         log.error(f"Failed to load {keyword} page {page_num}: {e}")
         print(f"  ✗ Failed to load page: {e}")
         return {"jobs": [], "totalOnPage": 0, "maxPage": 0, "error": str(e)}
@@ -180,7 +180,7 @@ async def scrape_search_page(page: Page, keyword: str, page_num: int) -> dict:
             )
             loaded = True
             break
-        except Exception:
+        except (PlaywrightError, asyncio.TimeoutError):
             title = await page.title()
             if "moment" in title.lower() or "cloudflare" in title.lower() or "just a" in title.lower():
                 wait_sec = 5 + attempt * 3
@@ -297,7 +297,7 @@ async def scrape_single_url(page: Page, url: str) -> list:
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
-    except Exception as e:
+    except (PlaywrightError, OSError) as e:
         print(f"  ✗ Failed to load: {e}")
         return []
 
@@ -307,7 +307,7 @@ async def scrape_single_url(page: Page, url: str) -> list:
             await page.wait_for_selector('article[data-test="JobTile"]', timeout=10000)
             loaded = True
             break
-        except Exception:
+        except (PlaywrightError, asyncio.TimeoutError):
             title = await page.title()
             if "moment" in title.lower() or "cloudflare" in title.lower() or "just a" in title.lower():
                 wait_sec = 5 + attempt * 3

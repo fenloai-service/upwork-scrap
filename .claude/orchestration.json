@@ -1,16 +1,17 @@
 {
   "metadata": {
-    "workflow_version": "v2.1",
-    "last_updated": "2026-02-11 22:42:00",
+    "workflow_version": "v2.2",
+    "last_updated": "2026-02-12",
     "source": "docs/WORKFLOW.md",
-    "current_phase": "Complete",
+    "current_phase": "phase_4",
     "auto_continue_enabled": true,
     "phase_1_completed": "2026-02-11 21:30:00",
     "phase_2_completed": "2026-02-11 22:17:00",
     "phase_3_completed": "2026-02-11 22:42:00",
     "step_3.1_completed": "2026-02-11 22:28:00",
     "step_3.2_completed": "2026-02-11 22:35:00",
-    "step_3.3_completed": "2026-02-11 22:42:00"
+    "step_3.3_completed": "2026-02-11 22:42:00",
+    "phase_4_completed": "2026-02-12"
   },
   "phases": [
     {
@@ -372,6 +373,182 @@
           ],
           "rollback": "Revert rating/feedback changes in dashboard/app.py and database/db.py",
           "completion_notes": "Added user_rating column (INTEGER, 1-5) to proposals table. Created update_proposal_rating() function with validation. Created get_proposal_analytics() function returning acceptance_rate, avg_rating, rating_distribution, and status breakdown. Added rating UI (1-5 star buttons) to proposal cards for submitted/approved proposals. Added analytics section at top of Proposals tab showing acceptance rate, avg rating, and rating distribution chart. All verification commands passed."
+        }
+      ]
+    }
+    ,
+    {
+      "id": "phase_4",
+      "name": "Phase 4 - Code Quality & Reliability",
+      "estimated_hours": 18,
+      "status": "pending",
+      "origin": "Spec panel review 2026-02-12 (Fowler, Nygard, Crispin, Wiegers, Adzic). Score: 5.8/10.",
+      "steps": [
+        {
+          "id": "4.1",
+          "name": "Config Loader Extraction",
+          "status": "completed",
+          "estimated_hours": 2,
+          "priority": "P0",
+          "findings": ["SP-1: Circular imports in 6 modules", "SP-4: Config loading pattern duplicated 6x"],
+          "description": "Extract shared config_loader.py to eliminate circular imports and deduplicate the try-DB/try-YAML/except pattern repeated in 6 modules",
+          "tasks": [
+            "Create config_loader.py with load_config(config_name, fallback_yaml_path, required_keys) function",
+            "Implementation: try DB -> try YAML -> raise ConfigError. Log WARNING on fallback.",
+            "Add ConfigError custom exception class",
+            "Replace late imports in config.py, matcher.py, proposal_generator.py, notifier.py, ai_client.py, dashboard/config_editor.py",
+            "Only config_loader.py should import from database.db.load_config_from_db"
+          ],
+          "files_to_create": ["config_loader.py"],
+          "files_to_edit": ["config.py", "matcher.py", "proposal_generator.py", "notifier.py", "ai_client.py", "dashboard/config_editor.py"],
+          "verification": [
+            "grep -rn 'from database.db import load_config_from_db' *.py  # Only config_loader.py",
+            "python -c \"from config_loader import load_config; print('loaded')\"",
+            "pytest tests/ -v  # No regressions",
+            "python -m py_compile config_loader.py matcher.py proposal_generator.py notifier.py ai_client.py config.py"
+          ],
+          "rollback": "Delete config_loader.py; revert imports in 6 modules to late-import pattern"
+        },
+        {
+          "id": "4.2",
+          "name": "Error Handling Hardening",
+          "status": "completed",
+          "estimated_hours": 2,
+          "priority": "P0",
+          "findings": ["SP-3: 22+ bare except Exception handlers", "Silent failures in config loaders and scraper"],
+          "description": "Replace bare except Exception with specific exception types and add logging to all fallback paths",
+          "tasks": [
+            "Audit all except Exception blocks (22+ instances)",
+            "Replace with specific types: ConnectionError, TimeoutError, sqlite3.OperationalError, yaml.YAMLError, openai.APIError, json.JSONDecodeError",
+            "Add log.warning() to every fallback path (currently silent pass)",
+            "Fix scraper/browser.py silent except: pass — add log.debug()",
+            "Wrap json.loads in proposal_generator.py:build_proposal_prompt() with try/except JSONDecodeError",
+            "Keep top-level except Exception only in cmd_monitor_new() with log.exception() for full traceback"
+          ],
+          "files_to_edit": ["main.py", "scraper/browser.py", "config.py", "ai_client.py", "proposal_generator.py", "notifier.py", "classifier/ai.py"],
+          "verification": [
+            "grep -cn 'except Exception' *.py scraper/*.py classifier/*.py database/*.py dashboard/*.py  # <=3 total",
+            "grep -n 'except.*pass' scraper/browser.py  # 0 matches",
+            "pytest tests/ -v  # No regressions"
+          ],
+          "rollback": "git diff each file; revert individual except blocks"
+        },
+        {
+          "id": "4.3",
+          "name": "Database Robustness",
+          "status": "completed",
+          "estimated_hours": 3,
+          "priority": "P1",
+          "findings": ["SP-5: No transactions for batch ops", "SP-8: Unbounded SELECT * queries", "SP-9: Missing indexes on category, proposals"],
+          "description": "Add missing indexes, pagination to large queries, and transaction support for batch operations",
+          "tasks": [
+            "Add idx_jobs_category index in init_db()",
+            "Add idx_proposals_status_generated compound index in init_db()",
+            "Add limit/offset params to get_all_jobs() (default: no limit for backward compat)",
+            "Add limit/offset params to get_proposals()",
+            "Wrap update_job_categories_batch() in explicit transaction with rollback on error",
+            "Verify all DB functions use try/finally with conn.close()"
+          ],
+          "files_to_edit": ["database/db.py"],
+          "verification": [
+            "grep 'idx_jobs_category' database/db.py",
+            "grep 'idx_proposals_status_generated' database/db.py",
+            "grep -A2 'def get_all_jobs' database/db.py  # Shows limit parameter",
+            "pytest tests/test_db.py tests/test_db_proposals.py -v",
+            "python -c \"from database.db import init_db; init_db(); print('indexes created')\""
+          ],
+          "rollback": "Drop new indexes; revert database/db.py pagination params"
+        },
+        {
+          "id": "4.4",
+          "name": "Monitor Pipeline Refactor",
+          "status": "completed",
+          "estimated_hours": 5,
+          "priority": "P1",
+          "findings": ["SP-2: cmd_monitor_new() is 285 lines — god function", "No stage isolation or checkpoint/resume"],
+          "description": "Extract pipeline stages from cmd_monitor_new() into separate functions with independent error recovery",
+          "tasks": [
+            "Extract _stage_scrape(keywords, pages) -> list[dict]",
+            "Extract _stage_classify(job_uids) -> int",
+            "Extract _stage_match(jobs, preferences) -> list[dict]",
+            "Extract _stage_generate_proposals(matched_jobs, dry_run) -> dict",
+            "Extract _stage_notify(proposals, stats, dry_run) -> bool",
+            "Reduce cmd_monitor_new() to ~50-80 line orchestrator",
+            "Add checkpoint dict tracking completed stages",
+            "Health check JSON includes stages_completed list",
+            "On re-run, skip stages whose outputs are already in DB"
+          ],
+          "files_to_edit": ["main.py"],
+          "verification": [
+            "wc -l of cmd_monitor_new() body <= 80 lines",
+            "Each _stage_* function has a docstring",
+            "python main.py monitor --new --dry-run  # Works identically",
+            "pytest tests/test_monitor_pipeline.py -v",
+            "python -c \"import json; d=json.load(open('data/last_run_status.json')); assert 'stages_completed' in d\""
+          ],
+          "rollback": "Revert main.py to pre-refactor state"
+        },
+        {
+          "id": "4.5",
+          "name": "Security Fixes",
+          "status": "completed",
+          "estimated_hours": 2,
+          "priority": "P2",
+          "findings": ["SP-7: Path traversal in config_editor.py", "SP-10: HTML injection in notifier.py", "SP-11: No config schema validation"],
+          "description": "Fix path traversal vulnerability, escape HTML in emails, and add config validation schemas",
+          "tasks": [
+            "Sanitize filename in dashboard/config_editor.py: use Path(filename).name, reject '..' or '/'",
+            "Escape user content in notifier.py with html.escape() before embedding in email HTML",
+            "Add optional schema parameter to config_loader.py load_config() for key/type validation",
+            "Add validation schemas for ai_models.yaml and job_preferences.yaml"
+          ],
+          "files_to_edit": ["dashboard/config_editor.py", "notifier.py", "config_loader.py"],
+          "verification": [
+            "python -c \"from dashboard.config_editor import get_config_files; print('safe')\"",
+            "grep 'escape' notifier.py  # html.escape is used",
+            "pytest tests/ -v"
+          ],
+          "rollback": "Revert dashboard/config_editor.py, notifier.py, config_loader.py"
+        },
+        {
+          "id": "4.6",
+          "name": "Test Coverage Expansion",
+          "status": "completed",
+          "estimated_hours": 4,
+          "priority": "P1",
+          "findings": ["SP-6: notifier.py, api_usage_tracker.py, dashboard/analytics.py have zero tests"],
+          "description": "Add tests for untested modules and extend existing tests with retry/rate-limit/edge-case coverage",
+          "tasks": [
+            "Create tests/test_notifier.py (5 tests): SMTP mock, fallback to file, missing password, HTML escaping, status JSON",
+            "Create tests/test_api_tracker.py (3 tests): track call, rate limit check, daily reset",
+            "Create tests/test_analytics.py (4 tests): skill_frequency, hourly_rate_stats, empty DataFrame, JSON skills parsing",
+            "Extend tests/test_proposal_generator.py: retry logic (mock fail-fail-succeed), daily limit enforcement, malformed key_tools JSON",
+            "Create tests/test_pipeline_integration.py: end-to-end with real SQLite + mocked scraper/API"
+          ],
+          "files_to_create": ["tests/test_notifier.py", "tests/test_api_tracker.py", "tests/test_analytics.py", "tests/test_pipeline_integration.py"],
+          "files_to_edit": ["tests/test_proposal_generator.py"],
+          "verification": [
+            "pytest tests/ -v  # Exit code 0, 0 failures",
+            "pytest tests/test_notifier.py tests/test_api_tracker.py tests/test_analytics.py -v  # All pass",
+            "No test requires network, Chrome, or real API keys"
+          ],
+          "rollback": "Delete new test files"
+        },
+        {
+          "id": "phase_4_gate",
+          "name": "Phase 4 Gate - Quality Baseline Met",
+          "status": "completed",
+          "estimated_hours": 0,
+          "description": "Verify all Phase 4 quality improvements are complete and no regressions introduced",
+          "verification": [
+            "pytest tests/ -v  # Exit code 0, all pass",
+            "grep -rn 'except Exception' *.py scraper/*.py classifier/*.py database/*.py  # <=3",
+            "grep -rn 'from database.db import load_config_from_db' *.py  # Only config_loader.py",
+            "cmd_monitor_new() body <= 80 lines",
+            "python -m py_compile config_loader.py",
+            "Path traversal rejected in config editor"
+          ],
+          "blocking": true
         }
       ]
     }

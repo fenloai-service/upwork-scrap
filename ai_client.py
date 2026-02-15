@@ -12,9 +12,10 @@ import logging
 from pathlib import Path
 
 import yaml
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 import config
+from config_loader import load_config
 
 log = logging.getLogger(__name__)
 
@@ -33,19 +34,12 @@ def load_ai_config(config_path: Path = None) -> dict:
     Raises:
         FileNotFoundError: If config file doesn't exist.
     """
-    if config_path is None:
-        try:
-            from database.db import load_config_from_db
-            db_data = load_config_from_db("ai_models")
-            if db_data is not None:
-                return db_data
-        except Exception:
-            pass
+    if config_path is not None:
+        # Direct YAML load when explicit path is given (testing)
+        with open(config_path) as f:
+            return yaml.safe_load(f)
 
-    path = config_path or _CONFIG_PATH
-    with open(path) as f:
-        data = yaml.safe_load(f)
-    return data
+    return load_config("ai_models", yaml_path=_CONFIG_PATH)
 
 
 def _build_client(provider_cfg: dict) -> tuple:
@@ -174,7 +168,7 @@ def check_provider_health(provider_name: str, config_path: Path = None) -> dict:
             "models": model_ids,
         }
 
-    except Exception as e:
+    except (OpenAIError, ConnectionError, TimeoutError, OSError, KeyError) as e:
         return {
             "success": False,
             "provider": provider_name,
@@ -202,7 +196,7 @@ def test_connection(provider_name: str = None, config_path: Path = None) -> dict
 
         return check_provider_health(provider_name, config_path)
 
-    except Exception as e:
+    except (OpenAIError, ConnectionError, TimeoutError, OSError, KeyError, FileNotFoundError) as e:
         return {
             "success": False,
             "provider": provider_name,

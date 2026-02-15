@@ -145,6 +145,7 @@ class TestGetConfigFiles:
 
     def test_returns_list_of_known_configs(self, tmp_path, monkeypatch):
         """Should return a list with known config filenames."""
+        from unittest.mock import patch
         from dashboard.config_editor import get_config_files
         import config
 
@@ -155,7 +156,10 @@ class TestGetConfigFiles:
         # Create one file
         (cfg_dir / "ai_models.yaml").write_text("test: true")
 
-        result = get_config_files()
+        # Mock DB to return empty settings so only disk files count
+        with patch("database.db.get_all_settings", return_value={}):
+            result = get_config_files()
+
         filenames = [r["filename"] for r in result]
 
         assert "ai_models.yaml" in filenames

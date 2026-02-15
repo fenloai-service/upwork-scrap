@@ -13,11 +13,11 @@ import os
 from pathlib import Path
 from datetime import datetime, date
 
-import yaml
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 import config
+from config_loader import load_config
 from database.db import insert_proposal, proposal_exists, get_proposals_generated_today
 from api_usage_tracker import check_daily_limit as check_api_rate_limit, record_usage, RateLimitExceeded
 from ai_client import get_client
@@ -36,26 +36,7 @@ RETRY_DELAYS = [5, 15, 60]  # seconds: exponential backoff
 
 def load_config_file(filename: str) -> dict:
     """Load and parse a config file — tries DB first, falls back to YAML."""
-    # Try database first
-    try:
-        from database.db import load_config_from_db
-        db_data = load_config_from_db(filename)
-        if db_data is not None:
-            return db_data
-    except Exception:
-        pass
-
-    # Fall back to YAML file
-    filepath = config.CONFIG_DIR / filename
-    try:
-        with open(filepath) as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        log.error(f"Config file not found: {filepath}")
-        raise
-    except yaml.YAMLError as e:
-        log.error(f"Invalid YAML in {filepath}: {e}")
-        raise
+    return load_config(filename.replace(".yaml", ""), yaml_path=config.CONFIG_DIR / filename)
 
 
 def load_user_profile() -> dict:
@@ -378,7 +359,7 @@ def generate_proposals_batch(matched_jobs: list[dict], dry_run: bool = False) ->
         profile = load_user_profile()
         projects = load_projects()
         guidelines = load_guidelines()
-    except Exception as e:
+    except (FileNotFoundError, KeyError, ValueError) as e:
         log.error(f"Failed to load config files: {e}")
         results['errors'].append(f"Config load error: {e}")
         return results
@@ -477,7 +458,7 @@ def generate_proposals_batch(matched_jobs: list[dict], dry_run: bool = False) ->
                 # Small delay to avoid rate limits
                 time.sleep(0.5)
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, IOError, ValueError, OSError) as e:
             log.error(f"Failed to generate proposal for {job_uid}: {e}")
             results['failed'] += 1
             results['errors'].append(f"{job_title}: {str(e)[:100]}")

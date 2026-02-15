@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Error as PlaywrightError
 
 import config
 
@@ -31,8 +31,8 @@ async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
         log.info("Connected to existing Chrome on port 9222")
         print("Connected to existing Chrome instance on port 9222.")
         return browser, False
-    except Exception:
-        pass
+    except (PlaywrightError, OSError):
+        log.debug("No Chrome running on port 9222, will launch a new instance")
 
     # Launch Chrome with remote debugging
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,7 +78,8 @@ async def launch_chrome_and_connect(playwright) -> tuple[Browser, bool]:
             log.info("Chrome launched and connected")
             print("Chrome launched and connected.")
             return browser, True
-        except Exception:
+        except (PlaywrightError, OSError):
+            log.debug("Chrome not ready yet, attempt %d", i + 1)
             if i > 3:
                 print(f"  Waiting for Chrome to start... ({i+1}s)")
 
@@ -125,7 +126,7 @@ async def warmup_cloudflare(page: Page):
                        wait_until="domcontentloaded", timeout=30000)
         log.info("Navigation completed")
 
-    except Exception as e:
+    except (PlaywrightError, OSError, RuntimeError) as e:
         log.error(f"Navigation failed: {e}")
         print(f"  ❌ Navigation failed: {e}", flush=True)
 
@@ -144,8 +145,8 @@ async def warmup_cloudflare(page: Page):
             log.info(f"Current URL after failed navigation: {current_url}")
             if current_url == "about:blank" or not current_url.startswith("http"):
                 raise RuntimeError(f"Navigation failed and page is at: {current_url}")
-        except Exception:
-            pass
+        except (PlaywrightError, OSError):
+            log.debug("Could not check URL after navigation failure")
 
         raise RuntimeError(f"Navigation failed: {e}")
 
@@ -195,7 +196,7 @@ async def warmup_cloudflare(page: Page):
                 else:
                     print(f"  ⏳ Waiting for page to load... ({attempt+1}/{max_attempts}) — { title[:40]}", flush=True)
 
-            except Exception as e:
+            except (PlaywrightError, OSError) as e:
                 log.warning(f"Could not get page info: {e}")
                 print(f"  ⏳ Waiting... ({attempt+1}/{max_attempts})", flush=True)
 
@@ -206,7 +207,7 @@ async def warmup_cloudflare(page: Page):
             else:
                 break
 
-        except Exception as e:
+        except (PlaywrightError, OSError, RuntimeError) as e:
             log.error(f"Unexpected error during warmup: {e}")
             if page.is_closed():
                 raise RuntimeError("Browser/page was closed unexpectedly")
@@ -228,7 +229,7 @@ async def warmup_cloudflare(page: Page):
             log.warning("Warmup completed but job tiles not detected")
             return True
 
-    except Exception as e:
+    except (PlaywrightError, OSError, RuntimeError) as e:
         log.error(f"Final check failed: {e}")
 
     # Manual intervention fallback

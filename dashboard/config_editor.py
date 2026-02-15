@@ -6,12 +6,30 @@ on disk when the database is unavailable or the setting hasn't been stored yet.
 
 import logging
 import shutil
+from pathlib import Path
 
 import yaml
 
 import config
+from config_loader import load_config
 
 log = logging.getLogger(__name__)
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize config filename to prevent path traversal.
+
+    Strips directory components and rejects suspicious characters.
+
+    Raises:
+        ValueError: If filename contains path traversal attempts.
+    """
+    clean = Path(filename).name  # Strip any directory components
+    if clean != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise ValueError(f"Invalid config filename: {filename!r}")
+    if not clean.endswith(".yaml"):
+        raise ValueError(f"Config filename must end with .yaml: {filename!r}")
+    return clean
 
 
 def _config_key(filename: str) -> str:
@@ -28,27 +46,12 @@ def load_yaml_config(filename: str) -> dict:
     Returns:
         Parsed dict, or empty dict if not found anywhere.
     """
-    # Try database first
-    try:
-        import database.db as _db_mod
-        db_data = _db_mod.get_setting(_config_key(filename))
-        if db_data is not None:
-            return db_data
-    except Exception as e:
-        log.debug(f"DB lookup failed for {filename}, falling back to YAML: {e}")
-
-    # Fall back to YAML file on disk
-    filepath = config.CONFIG_DIR / filename
-    try:
-        with open(filepath) as f:
-            data = yaml.safe_load(f)
-        return data if data is not None else {}
-    except FileNotFoundError:
-        log.warning(f"Config file not found: {filepath}")
-        return {}
-    except yaml.YAMLError as e:
-        log.error(f"Failed to parse {filepath}: {e}")
-        return {}
+    filename = _sanitize_filename(filename)
+    return load_config(
+        _config_key(filename),
+        yaml_path=config.CONFIG_DIR / filename,
+        default={},
+    )
 
 
 def save_yaml_config(filename: str, data: dict) -> bool:
@@ -61,6 +64,7 @@ def save_yaml_config(filename: str, data: dict) -> bool:
     Returns:
         True if saved successfully, False otherwise.
     """
+    filename = _sanitize_filename(filename)
     # Save to database (primary storage)
     try:
         import database.db as _db_mod
@@ -72,7 +76,7 @@ def save_yaml_config(filename: str, data: dict) -> bool:
             return True
         else:
             log.warning(f"save_setting returned False for {filename}")
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         log.warning(f"DB save failed for {filename}, falling back to YAML: {e}")
 
     # Fall back to YAML-only save
@@ -94,7 +98,7 @@ def _write_yaml_backup(filename: str, data: dict) -> bool:
 
         tmp_path.replace(filepath)
         return True
-    except Exception as e:
+    except (OSError, yaml.YAMLError) as e:
         log.debug(f"YAML backup write failed for {filename}: {e}")
         if backup_path.exists() and not filepath.exists():
             shutil.copy2(backup_path, filepath)
@@ -123,7 +127,7 @@ def get_config_files() -> list[dict]:
     try:
         import database.db as _db_mod
         db_keys = set(_db_mod.get_all_settings().keys())
-    except Exception:
+    except (OSError, KeyError):
         pass
 
     result = []

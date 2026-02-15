@@ -209,6 +209,7 @@ def test_daily_rate_limit_cap_reached(sample_job, sample_match_reasons, tmp_path
 
 def test_prompt_construction(sample_job, sample_match_reasons, tmp_path, monkeypatch):
     """Constructed prompt should contain job title, description, relevant project, and guidelines."""
+    from unittest.mock import patch
     from proposal_generator import build_proposal_prompt
 
     # Setup configs
@@ -259,12 +260,13 @@ def test_prompt_construction(sample_job, sample_match_reasons, tmp_path, monkeyp
     import config
     monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
 
-    # Load configs
+    # Load configs — bypass DB so test YAML files are used
     from proposal_generator import load_user_profile, load_projects, load_guidelines, select_relevant_projects
 
-    user_profile = load_user_profile()
-    all_projects = load_projects()
-    guide = load_guidelines()
+    with patch("database.db.load_config_from_db", return_value=None):
+        user_profile = load_user_profile()
+        all_projects = load_projects()
+        guide = load_guidelines()
 
     # Select relevant projects
     selected_projects = select_relevant_projects(sample_job, all_projects)

@@ -10,7 +10,6 @@ import logging
 import sqlite3
 from datetime import datetime, date
 
-import config
 from database.adapter import get_connection, is_postgres
 
 # Import error classes for both backends (psycopg2 may not be installed)
@@ -154,6 +153,15 @@ def _init_db_sqlite():
         except sqlite3.OperationalError:
             pass
 
+        # Compound indexes for common query patterns
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposals_status_generated "
+            "ON proposals(status, generated_at)"
+        )
+
         # Settings table (key-value store for dashboard/config settings)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
@@ -255,6 +263,15 @@ def _init_db_postgres():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proposals_generated ON proposals(generated_at)"
+        )
+
+        # Compound indexes for common query patterns
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposals_status_generated "
+            "ON proposals(status, generated_at)"
         )
 
         # Settings table (key-value store for dashboard/config settings)
@@ -377,13 +394,24 @@ def upsert_jobs(jobs: list[dict]) -> tuple[int, int]:
     return inserted, updated
 
 
-def get_all_jobs() -> list[dict]:
-    """Get all jobs as a list of dicts."""
+def get_all_jobs(limit: int = 0, offset: int = 0) -> list[dict]:
+    """Get all jobs as a list of dicts.
+
+    Args:
+        limit: Maximum number of rows to return. 0 means no limit (default).
+        offset: Number of rows to skip before returning results.
+    """
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY posted_date_estimated DESC"
-        ).fetchall()
+        query = "SELECT * FROM jobs ORDER BY posted_date_estimated DESC"
+        params = []
+        if limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+            if offset > 0:
+                query += " OFFSET ?"
+                params.append(offset)
+        rows = conn.execute(query, params).fetchall()
         return _rows_to_dicts(rows)
     finally:
         conn.close()
@@ -498,10 +526,17 @@ def update_job_classifications(results: list[dict]) -> int:
             ai_summary = r.get("ai_summary", "")
             conn.execute(
                 "UPDATE jobs SET categories=?, key_tools=?, ai_summary=? WHERE uid=?",
-                (categories, key_tools, ai_summary, uid),
+                (categories, key_tools, ai_summary, str(uid)),
             )
             count += 1
         conn.commit()
+    except (sqlite3.Error, OSError) as e:
+        log.error(f"Batch classification update failed, rolling back: {e}")
+        try:
+            conn.rollback()
+        except (sqlite3.Error, OSError):
+            pass
+        raise
     finally:
         conn.close()
     return count
@@ -748,8 +783,14 @@ def insert_proposal(
         conn.close()
 
 
-def get_proposals(status: str = None, limit: int = None) -> list[dict]:
-    """Get proposals, optionally filtered by status."""
+def get_proposals(status: str = None, limit: int = None, offset: int = 0) -> list[dict]:
+    """Get proposals, optionally filtered by status.
+
+    Args:
+        status: Filter by proposal status (e.g. 'pending_review').
+        limit: Maximum number of rows to return.
+        offset: Number of rows to skip before returning results.
+    """
     conn = get_connection()
     try:
         query = """
@@ -788,6 +829,9 @@ def get_proposals(status: str = None, limit: int = None) -> list[dict]:
         if limit:
             query += " LIMIT ?"
             params.append(limit)
+            if offset > 0:
+                query += " OFFSET ?"
+                params.append(offset)
 
         rows = conn.execute(query, params).fetchall()
         return _rows_to_dicts(rows)
@@ -1035,7 +1079,7 @@ def save_setting(key: str, value: dict) -> bool:
         conn.commit()
         log.info(f"Setting saved: {key}")
         return True
-    except Exception as e:
+    except (sqlite3.Error, TypeError, ValueError, OSError) as e:
         log.error(f"Failed to save setting '{key}': {e}")
         return False
     finally:
@@ -1077,6 +1121,6 @@ def load_config_from_db(config_name: str) -> dict | None:
     try:
         key = config_name.replace(".yaml", "")
         return get_setting(key)
-    except Exception as e:
+    except (sqlite3.Error, json.JSONDecodeError, KeyError, OSError, RuntimeError) as e:
         log.debug(f"DB config lookup failed for '{config_name}': {e}")
         return None

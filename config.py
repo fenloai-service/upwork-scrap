@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from config_loader import load_config
+
 log = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -30,29 +32,7 @@ for d in [PAGES_DIR, DETAIL_PAGES_DIR, REPORTS_DIR, CONFIG_DIR, EMAILS_DIR]:
 
 # ── YAML Config Loader ────────────────────────────────────────────────────────
 
-def _load_scraping_config() -> dict:
-    """Load scraping settings — tries DB first, falls back to YAML, then hardcoded defaults."""
-    # Try database first
-    try:
-        from database.db import load_config_from_db
-        db_data = load_config_from_db("scraping")
-        if db_data is not None:
-            return db_data.get("scraping", db_data)
-    except Exception:
-        pass
-
-    # Fall back to YAML file
-    yaml_path = CONFIG_DIR / "scraping.yaml"
-    try:
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        return data.get("scraping", {})
-    except (FileNotFoundError, yaml.YAMLError) as e:
-        log.debug(f"scraping.yaml not loaded ({e}), using hardcoded defaults")
-        return {}
-
-
-_scraping_cfg = _load_scraping_config()
+_scraping_cfg = load_config("scraping", top_level_key="scraping", default={})
 
 # ── Search Configuration ───────────────────────────────────────────────────────
 
