@@ -2,181 +2,203 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 🎯 Active Development Status
+## Active Development Status
 
-**IMPORTANT**: When the user says "continue implementation" or invokes `/sc:implement`, ALWAYS check `.claude/orchestration.json` FIRST.
+**Phases 1–4 are complete.** The orchestration file tracks all history.
 
 - **Orchestration File**: `.claude/orchestration.json` - Authoritative status tracker for all implementation phases and steps
 - **Source Document**: `docs/WORKFLOW.md` - Original implementation plan (reference only)
-- **Execution Status**: `.claude/orchestration.json` tracks which steps are "completed", "pending", or "blocked"
 
-**Process**:
+When the user says "continue implementation" or invokes `/sc:implement`:
 1. Read `.claude/orchestration.json` to find current phase and next pending step
-2. If at a gate (e.g., "phase_1_gate"), verify all gate requirements pass before proceeding
-3. Implement the next pending step according to its specification
-4. Update `.claude/orchestration.json` to mark step as "completed" (use `.claude/orchestration_manager.py` if available)
-5. Continue to next step or ask user for confirmation
+2. If at a gate, verify all gate requirements pass before proceeding
+3. Implement the next pending step, update orchestration, continue
 
 ## Project Overview
 
-Upwork job scraper and analyzer for AI-related freelance jobs. Scrapes public Upwork search results (no login) using a real Chrome browser via CDP to bypass Cloudflare, stores data in SQLite with Grok AI-powered classification, and displays results in a live Streamlit dashboard with real-time filtering.
+Upwork job scraper, AI classifier, job matcher, and proposal generator for AI-related freelance jobs. Scrapes public Upwork search results (no login) using a real Chrome browser via CDP to bypass Cloudflare, stores data in SQLite/PostgreSQL, classifies with configurable AI providers (Ollama/Groq), scores jobs against user preferences, generates personalized proposals, and displays everything in a live Streamlit dashboard.
 
 ## Commands
 
 ```bash
-# Setup (or use: make setup)
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
+# Setup
+make setup                # Create venv, install deps, install Playwright Chromium
+make setup-dev            # Same + dev dependencies (pytest etc.)
 
 # Scraping (launches Chrome, requires display)
-PYTHONUNBUFFERED=1 python main.py scrape --url "https://www.upwork.com/nx/search/jobs/?q=ai&..."
 python main.py scrape --keyword "machine learning" --pages 10 --start-page 1
-python main.py scrape --full          # All 15 keywords, all pages
 python main.py scrape --new           # Daily: page 1-2 per keyword
+python main.py scrape --full          # All 15 keywords, all pages
+make scrape-keyword KEYWORD="tensorflow"
 
 # Classification
-export XAI_API_KEY="xai-..."          # See .env.example
-python -m classifier.ai               # AI classify unprocessed jobs (Grok)
+python -m classifier.ai               # AI classify unprocessed jobs
 python -m classifier.ai --status      # Show classification progress
 
-# Dashboard & Analysis
-streamlit run dashboard/app.py         # Launch live dashboard (auto-opens browser)
-python main.py stats                   # Terminal summary
+# Full monitor pipeline (scrape -> classify -> match -> propose -> email)
+python main.py monitor --new
+python main.py monitor --new --dry-run  # Test without sending emails
+python main.py monitor --new --loop     # Run continuously (interval from config/scraping.yaml)
 
-# Monitor background scrape
-tail -f data/scrape.log
+# Dashboard
+streamlit run dashboard/app.py         # Launch live dashboard (localhost:8501)
+
+# Stats & health
+python main.py stats                   # Terminal summary
+python main.py health                  # System health check
+python api_usage_tracker.py            # API usage report
+
+# Testing
+make test                              # pytest tests/ -v
+pytest tests/test_matcher.py           # Single test file
+pytest tests/test_matcher.py::test_score_job -v  # Single test
 
 # Quick DB queries
-python -c "from database.db import get_job_count, init_db; init_db(); print(get_job_count())"
-sqlite3 data/jobs.db "SELECT category, COUNT(*) FROM jobs WHERE category != '' GROUP BY category ORDER BY COUNT(*) DESC"
-
-# Makefile shortcuts
-make scrape-new        # Daily scrape
-make scrape-full       # Full scrape
-make classify          # AI classification
-make dashboard         # Launch Streamlit
-make stats             # Terminal summary
-make test              # Run tests
+make db-count                          # Total job count
+make db-categories                     # Category breakdown
 ```
 
 ## Architecture
 
-**Data flow**: `main.py` CLI → `scraper/browser.py` (Chrome CDP on port 9222, Cloudflare warmup) → `scraper/search.py` (JS DOM extraction) → `database/db.py` (SQLite or PostgreSQL upsert) → `classifier/ai.py` (Grok API) → `dashboard/app.py` (Streamlit + Plotly live UI).
+**Full pipeline**: `main.py` CLI -> `scraper/` (Chrome CDP) -> `database/db.py` (upsert) -> `classifier/ai.py` (AI classify) -> `matcher.py` (score & filter) -> `proposal_generator.py` (AI proposals) -> `notifier.py` / `notifier_resend.py` (email) -> `dashboard/app.py` (Streamlit UI).
 
 **Project structure**:
 ```
-main.py                 # CLI entry point (scrape, report, dashboard, stats)
-config.py               # All configuration constants
+main.py                 # CLI: scrape, stats, health, monitor, dashboard
+config.py               # Search URL template, keywords, safety delays, paths
+config_loader.py        # Centralized config: DB-first, YAML fallback (only module importing load_config_from_db)
+ai_client.py            # AI provider abstraction (Ollama, Groq, xAI)
+matcher.py              # Job scoring: budget/skills/experience/client weighted scoring
+proposal_generator.py   # AI proposal generation with retry, daily limits
+notifier.py             # Email notifications via Gmail SMTP
+notifier_resend.py      # Email via Resend API (alternative)
+api_usage_tracker.py    # API call tracking (separate SQLite: data/api_usage.db)
 scraper/
-  browser.py            # Chrome CDP connection, Cloudflare warmup, human-like delays
-  search.py             # Search page scraping, JS extraction
+  browser.py            # Chrome CDP connection, Cloudflare warmup
+  search.py             # JS DOM extraction (EXTRACT_JOBS_JS)
 database/
-  adapter.py            # DB abstraction layer (SQLite vs PostgreSQL)
-  db.py                 # DB init, upsert, queries (uses adapter)
+  adapter.py            # SQLite/PostgreSQL abstraction (auto placeholder conversion)
+  db.py                 # All DB operations: jobs, proposals, favorites, settings
 classifier/
   rules.py              # Rule-based classification (keyword matching)
-  ai.py                 # AI classification (Grok/xAI API)
+  ai.py                 # AI classification (batch 20 jobs per call)
 dashboard/
-  app.py                # Live Streamlit dashboard
+  app.py                # Streamlit dashboard (Jobs, Analytics, Settings tabs)
   analytics.py          # DataFrame analytics (skill freq, distributions)
-  html_report.py        # Static HTML report generator (legacy)
+  config_editor.py      # In-dashboard YAML config editor (path-traversal safe)
+config/                 # YAML configuration files
+  ai_models.yaml        # AI provider/model config (Ollama, Groq, fallbacks)
+  job_preferences.yaml  # Matching criteria (budget, skills, thresholds)
+  user_profile.yaml     # Freelancer profile for proposals
+  proposal_guidelines.yaml  # Proposal writing rules
+  email_config.yaml     # SMTP/Resend settings
+  projects.yaml         # Portfolio projects for proposal references
+  scraping.yaml         # Scraping parameters + scheduler interval
 tests/
-  conftest.py           # Shared fixtures
-  test_*.py             # Test files
+  conftest.py           # Shared fixtures, playwright mock, tmp_db
 scripts/                # One-off utilities (not part of main pipeline)
 docs/                   # PRD, workflow documentation
 ```
 
 **Key design decisions**:
-- **Chrome CDP, not Playwright's bundled Chromium** — real Chrome passes Cloudflare; Playwright's Chromium gets blocked. Browser connects via `connect_over_cdp("http://127.0.0.1:9222")`. Persistent profile in `data/chrome_profile/` caches Cloudflare tokens between runs.
-- **Incremental DB saves** — `scrape_keyword()` accepts a `save_fn` callback (typically `upsert_jobs`) called after each page, so data survives crashes. The `--start-page` flag enables resuming.
-- **No login required** — all data comes from public search result pages. User's Upwork freelancer account is never exposed.
-- **JS-based extraction** — `EXTRACT_JOBS_JS` in `scraper/search.py` runs in-browser JavaScript using `data-test` attribute selectors (e.g., `article[data-test="JobTile"]`, `[data-test="TokenClamp JobAttrs"]`).
-- **Two-stage classification** — optional rule-based classification (`classifier/rules.py`) for quick categorization, followed by AI-powered classification (`classifier/ai.py` using Grok AI) that adds structured categories, key tools, and single-sentence summaries. Batch processing with 20 jobs per API call.
-- **Live Streamlit dashboard** — real-time web interface with auto-refresh (5-min TTL), instant filtering, no HTML regeneration needed. Runs on localhost:8501.
-- **Hybrid database architecture** — SQLite by default for local use; PostgreSQL (Neon) when `DATABASE_URL` env var is set. `database/adapter.py` provides a uniform connection interface that auto-converts `?` placeholders to `%s` for PostgreSQL and wraps psycopg2 connections in an SQLite-like API. No code changes needed outside the adapter layer.
+- **Chrome CDP, not Playwright's bundled Chromium** -- real Chrome passes Cloudflare; Playwright's Chromium gets blocked. Browser connects via `connect_over_cdp("http://127.0.0.1:9222")`. Persistent profile in `data/chrome_profile/` caches Cloudflare tokens between runs.
+- **Incremental DB saves** -- `scrape_keyword()` accepts a `save_fn` callback (typically `upsert_jobs`) called after each page, so data survives crashes. `--start-page` enables resuming.
+- **No login required** -- all data from public search result pages.
+- **JS-based extraction** -- `EXTRACT_JOBS_JS` in `scraper/search.py` runs in-browser JavaScript using `data-test` attribute selectors (e.g., `article[data-test="JobTile"]`).
+- **Configurable AI providers** -- `ai_client.py` reads `config/ai_models.yaml` to select provider (Ollama local, Groq cloud) with automatic fallback chains. Uses OpenAI-compatible API format for all providers.
+- **Two-stage classification** -- rule-based (`classifier/rules.py`) then AI-powered (`classifier/ai.py`). Batch processing with 20 jobs per API call.
+- **Weighted job matching** -- `matcher.py` scores jobs 0-100: budget fit (30%), skills overlap (25%), experience level (15%), client quality (15%), competition/proposals (10%), job type (5%). Configurable via `config/job_preferences.yaml`.
+- **Hybrid database** -- SQLite by default; PostgreSQL (Neon) when `DATABASE_URL` env var is set. `database/adapter.py` auto-converts `?` placeholders to `%s` for PostgreSQL.
+- **Centralized config loading** -- `config_loader.py` is the single module that imports `load_config_from_db`. All other modules call `config_loader.load_config()` which tries DB first, then YAML fallback. This eliminates circular imports and deduplicates the try-DB/try-YAML pattern.
+- **Stage-based monitor pipeline** -- `cmd_monitor_new()` is a thin orchestrator calling `_stage_scrape`, `_stage_classify`, `_stage_match`, `_stage_generate_proposals`, `_stage_notify`. Each stage is independently testable with error isolation.
 
-## Database Architecture
+## AI Provider Architecture
 
-**Hybrid SQLite / PostgreSQL support**:
-- **Default (local)**: SQLite at `data/jobs.db` — no configuration needed
-- **Cloud (opt-in)**: Set `DATABASE_URL` env var to a PostgreSQL connection string (e.g., Neon)
-- **Adapter**: `database/adapter.py` handles all backend differences (placeholders, DDL, connection wrapping)
-- **Migration**: `scripts/migrate_to_postgres.py` copies all data from local SQLite → PostgreSQL
-- **Dashboard**: `dashboard/app.py` reads `DATABASE_URL` from Streamlit secrets for cloud deployment
-- **API usage tracking**: `api_usage_tracker.py` always uses local SQLite (`data/api_usage.db`) — not migrated
+`ai_client.py` provides a unified interface to multiple AI backends, configured in `config/ai_models.yaml`:
 
-**Cloud deployment flow**: Local scraping → `migrate_to_postgres.py` → Neon PostgreSQL ← Streamlit Cloud dashboard
+- **Primary**: Ollama (local or remote via SSH tunnel at `localhost:11434/v1`) running Qwen 2.5 7B
+- **Fallback**: Groq Cloud (free tier ~100K tokens/day, `GROQ_API_KEY` env var)
+- **Legacy**: xAI/Grok (`XAI_API_KEY` env var, referenced in older code paths)
 
-## Database Schema
+Separate model configs for `classification` vs `proposal_generation` tasks, each with its own fallback chain. All providers use OpenAI-compatible client (`openai.OpenAI`).
 
-SQLite at `data/jobs.db`. Primary key is `uid` (Upwork job ID). Upsert preserves `first_seen_at` on updates.
+## Database
 
-**Core columns**: `uid`, `title`, `url`, `posted_text`, `posted_date_estimated`, `description`, `job_type`, `hourly_rate_min`, `hourly_rate_max`, `fixed_price`, `experience_level`, `est_time`, `skills` (JSON array string), `proposals`, `client_country`, `client_total_spent`, `client_rating`, `client_info_raw`, `keyword`, `scraped_at`, `source_page`, `first_seen_at`.
+**Hybrid SQLite / PostgreSQL**:
+- **Local**: SQLite at `data/jobs.db` (default, no config needed)
+- **Cloud**: Set `DATABASE_URL` env var for PostgreSQL (Neon). Dashboard reads from Streamlit secrets (`.streamlit/secrets.toml`).
+- **Adapter**: `database/adapter.py` handles DDL differences, placeholder conversion, connection wrapping.
 
-**Classification columns** (added via ALTER TABLE, defaults to empty):
-- `category` — primary category key (e.g., "ai_agent", "rag_doc_ai")
-- `category_confidence` — 0-1 confidence score
-- `summary` — brief text summary (rule-based)
-- `categories` — JSON array of 1-3 category labels from AI classifier
-- `key_tools` — JSON array of 2-5 specific tools/frameworks identified by AI
-- `ai_summary` — one-sentence description from AI (max 120 chars, verb-first)
+**Tables**: `jobs` (primary, keyed on `uid`), `proposals` (generated proposals with status/rating), `favorites` (bookmarked jobs with notes), `settings` (key-value config store for dashboard).
 
-**Indexes**: `keyword`, `posted_date_estimated`, `scraped_at`. WAL journal mode for concurrent read/write.
+**Key DB functions in `database/db.py`**: `init_db()`, `upsert_jobs()`, `get_all_jobs(limit, offset)`, `get_unclassified_jobs()`, `update_job_classifications()` (transactional with rollback), `insert_proposal()`, `get_proposals(status, limit, offset)`, `update_proposal_status()`, `update_proposal_rating()`, `get_proposal_analytics()`, `add_favorite()`, `get_favorites()`, `get_setting()`, `save_setting()`, `load_config_from_db()`.
 
-## Classification System
+**Indexes**: `idx_jobs_category` on `jobs(category)`, `idx_proposals_status_generated` on `proposals(status, generated_at)`.
 
-Two-stage approach (both optional):
+## Configuration
 
-1. **Rule-based** (`classifier/rules.py`) — keyword matching on title/description/skills with weighted scoring. 16 categories including AI web app, chatbot, agent, RAG, ML model, computer vision, NLP, data work, automation, pure web dev, mobile, consulting, voice/speech, other. Returns `(category_key, confidence)`.
+Three layers, resolved by `config_loader.load_config()`:
+1. **DB settings table** (highest priority) -- `database/db.py` `get_setting()`/`save_setting()`, persisted via dashboard
+2. **YAML files** in `config/` -- edited directly or via dashboard Settings tab (`dashboard/config_editor.py`)
+3. **Default values** -- passed as `default=` parameter to `load_config()`
 
-2. **AI-powered** (`classifier/ai.py`) — uses Grok AI (xAI) to classify jobs in batches of 20. Requires `XAI_API_KEY`. Outputs structured JSON with:
-   - `categories`: 1-3 labels (e.g., "Build AI Web App / SaaS", "RAG / Document AI")
-   - `key_tools`: 2-5 specific technologies (e.g., "LangChain", "Pinecone", "Next.js" — NOT generic like "Python", "AI")
-   - `ai_summary`: one sentence describing the work (verb-first, max 120 chars)
+Config loading is centralized in `config_loader.py`. Only this module imports `load_config_from_db` from the database layer. All other modules use `from config_loader import load_config`. The `ConfigError` exception is raised when config cannot be loaded from any source and no default is provided. Optional `schema` parameter validates key types. Optional `required_keys` validates presence.
 
-Results saved to `data/classified_results.jsonl` and upserted back into DB. The AI classifier only processes jobs where `ai_summary` is empty.
+**Environment variables** (`.env`):
+- `DATABASE_URL` -- PostgreSQL connection string (optional, enables cloud DB)
+- `GROQ_API_KEY` -- Groq Cloud API access
+- `XAI_API_KEY` -- xAI/Grok API access (legacy)
+- `GMAIL_APP_PASSWORD` -- Gmail SMTP for email notifications
 
-**Alternative**: `scripts/remote_classify_v2.py` supports local Ollama models (Mistral 7B) for offline classification without API costs.
+## Testing
 
-## Config
+Tests in `tests/` use pytest. `conftest.py` mocks `playwright` module (tests run without Playwright installed) and provides `tmp_db` and `sample_job` fixtures. `ensure_sqlite_backend` fixture (autouse) clears `DATABASE_URL` so tests always use SQLite.
 
-`config.py` contains:
-- Search URL template with embedded Upwork filters (`amount=501-`, `contractor_tier=2,3`, `hourly_rate=30-`, `payment_verified=1`)
-- 15 AI keywords (ai, machine learning, deep learning, NLP, computer vision, LLM, GPT, data science, generative AI, prompt engineering, RAG, fine-tuning, AI chatbot, neural network, transformer model)
-- Safety parameters (5-12s delays, scroll timing, session limits)
-- `HEADLESS = False` is intentional for Cloudflare bypass
-- Paths for `DATA_DIR`, `DB_PATH`
+```bash
+pytest tests/ -v                                    # All tests (138 pass, 3 skipped)
+pytest tests/test_matcher.py -v                     # One file
+pytest tests/test_matcher.py::test_score_job -v     # One test
+```
+
+**Test files**: `test_db.py`, `test_db_proposals.py`, `test_db_settings.py`, `test_adapter.py`, `test_config.py`, `test_config_editor.py`, `test_matcher.py`, `test_proposal_generator.py`, `test_notifier.py`, `test_api_tracker.py`, `test_analytics.py`, `test_pipeline_integration.py`, `test_scraper.py`, `test_classifier.py`, `test_duplicate_handling.py`, `test_ai_client.py`, `test_monitor_pipeline.py`.
+
+**Testing with config_loader**: Tests that need to control which config is loaded must mock the DB lookup, since `config_loader.load_config()` tries DB first. Use `patch("database.db.load_config_from_db", return_value=None)` to force YAML fallback. If `load_config` is called without an explicit `yaml_path`, also patch `config_loader._CONFIG_DIR` to point at the test's config directory.
 
 ## Cloudflare Handling
 
-`warmup_cloudflare()` in `scraper/browser.py` navigates to a test URL first. If the page title contains "Just a moment..." it retries up to 6 times. On first run with a fresh Chrome profile, the user may need to manually solve a Turnstile challenge in the browser window. Subsequent runs reuse cached tokens from the persistent Chrome profile at `data/chrome_profile/`.
+`warmup_cloudflare()` in `scraper/browser.py` navigates to a test URL first. If page title contains "Just a moment..." it retries up to 6 times. On first run with a fresh Chrome profile, user may need to manually solve a Turnstile challenge. Subsequent runs reuse cached tokens from `data/chrome_profile/`. `HEADLESS = False` in `config.py` is intentional for this reason.
 
-## Dashboard
+## Monitor Pipeline
 
-**Streamlit Dashboard** (`dashboard/app.py`) — live web application (localhost:8501) with:
-- Real-time filtering (category, job type, budget, experience, search)
-- Auto-refresh every 5 minutes (configurable TTL)
-- Instant filter updates (no page reload)
-- Expandable job cards with AI summaries and tools
-- Multi-tab interface: Jobs, Analytics, Settings
-- Plotly charts embedded in Analytics tab
-- Session state management (filters persist)
-- CSV export of filtered results
-- No HTML regeneration needed—always shows latest data
+`cmd_monitor_new()` in `main.py` is a thin orchestrator (~96 lines) calling five extracted stage functions:
 
-Run with `streamlit run dashboard/app.py`. Dashboard stays open and updates automatically.
+1. Acquire file lock (`data/monitor.lock`) to prevent concurrent runs
+2. `_stage_scrape(existing_uids)` -- scrape new jobs (page 1-2 per keyword)
+3. `_stage_classify(new_uids, dry_run)` -- AI classify unprocessed jobs
+4. `_stage_match(new_uids)` -- score and filter via `matcher.get_matching_jobs()`
+5. `_stage_generate_proposals(matched_jobs, dry_run)` -- generate proposals via `proposal_generator.generate_proposals_batch()`
+6. `_stage_notify(stats, start_time)` -- send email digest via `notifier.send_notification()`
+7. Write health check status to `data/last_run_status.json` (includes `stages_completed` list)
+
+Each stage function is independently testable with isolated error handling. Logs to `data/monitor.log`. Use `--dry-run` to test without sending emails.
+
+**Loop mode** (`--loop`): `_monitor_loop()` wraps `cmd_monitor_new()` in a `while True` loop. After each pipeline run it re-reads `config/scraping.yaml` → `scraping.scheduler.interval_minutes` (default 60) and sleeps for that duration before the next run. The interval is hot-reloaded each cycle, so changing it in the dashboard takes effect after the current sleep finishes. Stop with Ctrl+C.
+
+## Error Handling
+
+Specific exception types are used throughout (no bare `except Exception` except in `config_loader.py` for DB fallback and `main.py` top-level monitor catch). Key exception types by module:
+- **scraper/**: `PlaywrightError`, `asyncio.TimeoutError`, `OSError`
+- **database/**: `sqlite3.Error`, `OSError`
+- **ai_client.py**: `OpenAIError`, `ConnectionError`, `TimeoutError`
+- **config_loader.py**: `ConfigError` (custom) for missing configs
+- **dashboard/**: Specific per-operation (see inline comments)
 
 ## Legacy / Utility Scripts
 
-One-off utilities from early development live in `scripts/` and `dashboard/`. They are **not part of the main pipeline**:
+In `scripts/` -- not part of main pipeline:
+- `migrate_to_postgres.py` -- one-time SQLite -> PostgreSQL migration
+- `seed_settings_from_yaml.py` -- seed DB settings from YAML configs
+- `classify_with_opus.py`, `remote_classify.py`, `remote_classify_v2.py` -- classification experiments
+- `import_classifications.py`, `import_results.py` -- one-time data imports
 
-- `dashboard/html_dashboard.py` — legacy static HTML dashboard generator (replaced by Streamlit app)
-- `dashboard/html_report.py` — legacy static HTML report generator
-- `scripts/classify_with_opus.py` — one-time classification using Claude Opus
-- `scripts/remote_classify.py` / `remote_classify_v2.py` — remote/Ollama classification experiments
-- `scripts/import_classifications.py` / `import_results.py` — one-time data import scripts
-- `scripts/test_classify.py` — ad-hoc classification test
-- `scripts/check_classification.sh` — shell script to check classification progress
-- `scripts/summarize.py` — standalone job summarization script
+Root-level test scripts (`test_browser.py`, `test_email.py`, `test_email_send.py`, etc.) are ad-hoc debug scripts, not part of the test suite.

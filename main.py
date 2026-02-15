@@ -9,6 +9,7 @@ Usage:
     python main.py scrape --keyword "machine learning" --pages 5
     python main.py monitor --new                    # Monitor pipeline: scrape → classify → match → generate
     python main.py monitor --new --dry-run          # Monitor without API calls (testing)
+    python main.py monitor --new --loop             # Run pipeline on repeat (interval from config)
     python main.py report                           # Generate HTML report
     python main.py stats                            # Print quick stats
 """
@@ -633,6 +634,20 @@ def _stage_notify(stats: dict, start_time: float):
         log.warning(f"Email notification failed (non-critical): {e}")
         print(f"  Email notification failed: {e}")
 
+def _read_loop_interval() -> int:
+    """Read scheduler interval from scraping.yaml. Returns minutes (default 60)."""
+    try:
+        import yaml
+        cfg_path = Path("config/scraping.yaml")
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("scraping", {}).get("scheduler", {}).get("interval_minutes", 60)
+    except (yaml.YAMLError, OSError) as e:
+        log.warning(f"Failed to read scheduler interval: {e}")
+    return 60
+
+
 async def cmd_monitor_new(dry_run: bool = False):
     """Monitor pipeline: scrape -> classify -> match -> generate -> notify.
 
@@ -732,6 +747,35 @@ async def cmd_monitor_new(dry_run: bool = False):
         release_lock()
 
 
+async def _monitor_loop(dry_run: bool = False):
+    """Run the monitor pipeline in a loop with configurable interval."""
+    run_count = 0
+    print("\n" + "=" * 70)
+    print("MONITOR LOOP STARTED (Ctrl+C to stop)")
+    print("=" * 70)
+
+    try:
+        while True:
+            run_count += 1
+            interval = _read_loop_interval()
+            print(f"\n>>> Loop run #{run_count} | Interval: {interval} min")
+
+            await cmd_monitor_new(dry_run=dry_run)
+
+            # Re-read interval after run (hot-reload)
+            interval = _read_loop_interval()
+            next_run = datetime.now().timestamp() + interval * 60
+            next_time = datetime.fromtimestamp(next_run).strftime("%H:%M:%S")
+            print(f"\n⏳ Next run in {interval} minutes (at {next_time}). Ctrl+C to stop.")
+            log.info(f"Loop run #{run_count} complete. Next run in {interval} min.")
+
+            await asyncio.sleep(interval * 60)
+
+    except KeyboardInterrupt:
+        print(f"\n\nMonitor loop stopped after {run_count} runs.")
+        log.info(f"Monitor loop stopped by user after {run_count} runs.")
+
+
 def main():
     setup_logging()
     parser = argparse.ArgumentParser(description="Upwork AI Jobs Scraper & Analyzer")
@@ -751,6 +795,7 @@ def main():
     monitor_p = subparsers.add_parser("monitor", help="Automated pipeline: scrape → classify → match → generate")
     monitor_p.add_argument("--new", action="store_true", help="Run daily monitor (page 1-2 per keyword)")
     monitor_p.add_argument("--dry-run", action="store_true", help="Test mode: skip API calls (classification & proposals)")
+    monitor_p.add_argument("--loop", action="store_true", help="Run continuously with configurable interval (from config/scraping.yaml)")
 
     # report
     subparsers.add_parser("report", help="Generate HTML report")
@@ -777,9 +822,12 @@ def main():
             asyncio.run(cmd_scrape_keyword(args.keyword, args.pages, args.start_page))
     elif args.command == "monitor":
         if args.new:
-            asyncio.run(cmd_monitor_new(dry_run=args.dry_run))
+            if args.loop:
+                asyncio.run(_monitor_loop(dry_run=args.dry_run))
+            else:
+                asyncio.run(cmd_monitor_new(dry_run=args.dry_run))
         else:
-            print("Usage: python main.py monitor --new [--dry-run]")
+            print("Usage: python main.py monitor --new [--dry-run] [--loop]")
             monitor_p.print_help()
     elif args.command == "report":
         cmd_report()

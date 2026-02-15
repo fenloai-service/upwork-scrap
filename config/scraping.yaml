@@ -27,3 +27,5 @@ scraping:
     enabled: true
     early_termination: true
     ratio_threshold: 0.1
+  scheduler:
+    interval_minutes: 60

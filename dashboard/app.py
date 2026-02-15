@@ -1941,6 +1941,24 @@ def render_scraping_ai_tab():
                            value=int(dup_cfg.get("ratio_threshold", 0.10) * 100),
                            help="Stop scraping a keyword when the % of duplicate jobs on a page exceeds this")
 
+    # ── Scheduler Settings ──────────────────────────────────────────────────
+    st.subheader("Scheduler (Loop Mode)")
+    sched_cfg = scraping_data.get("scheduler", {})
+    interval_minutes = st.slider(
+        "Run interval (minutes)", min_value=15, max_value=1440,
+        value=sched_cfg.get("interval_minutes", 60), step=15,
+        help="How often the monitor pipeline repeats when started with --loop. "
+             "Use `python main.py monitor --new --loop` to enable."
+    )
+    # Show human-readable time
+    hours, mins = divmod(interval_minutes, 60)
+    if hours and mins:
+        st.caption(f"Pipeline will run every {hours}h {mins}m")
+    elif hours:
+        st.caption(f"Pipeline will run every {hours}h")
+    else:
+        st.caption(f"Pipeline will run every {mins}m")
+
     # ── Save Scraping Config ─────────────────────────────────────────────────
     if st.button("Save Scraping Settings", key="save_scraping"):
         new_keywords = [k.strip() for k in keywords_text.strip().split("\n") if k.strip()]
@@ -1961,10 +1979,13 @@ def render_scraping_ai_tab():
                     "early_termination": early_term,
                     "ratio_threshold": dup_ratio / 100,
                 },
+                "scheduler": {
+                    "interval_minutes": interval_minutes,
+                },
             }
         }
         if save_yaml_config("scraping.yaml", new_scraping):
-            st.success(f"Scraping settings saved ({len(new_keywords)} keywords)")
+            st.success(f"Scraping settings saved ({len(new_keywords)} keywords, loop interval: {interval_minutes}m)")
             st.cache_data.clear()
         else:
             st.error("Failed to save scraping settings")
