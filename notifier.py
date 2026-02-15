@@ -49,7 +49,7 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
 
     # Get email config and dashboard URL
     email_cfg = load_email_config()
-    dashboard_url = email_cfg.get('dashboard_url', 'http://localhost:8501')
+    dashboard_url = email_cfg.get('dashboard_url', 'https://upwork-scrap-fenloai.streamlit.app/')
     max_proposals = email_cfg.get('notifications', {}).get('max_proposals_per_email', 10)
     shown_proposals = proposals[:max_proposals]
     remaining = len(proposals) - len(shown_proposals)

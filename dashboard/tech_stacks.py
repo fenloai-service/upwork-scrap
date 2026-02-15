@@ -231,7 +231,7 @@ def render_tech_stacks(df: pd.DataFrame):
 
             # Calculate avg budget for this stack
             stack_job_indices = stack_jobs[stack_name]
-            stack_df_subset = df.iloc[stack_job_indices]
+            stack_df_subset = df.loc[stack_job_indices]
 
             avg_budget = None
             fixed_jobs = stack_df_subset[stack_df_subset['job_type'] == 'Fixed']
@@ -251,7 +251,7 @@ def render_tech_stacks(df: pd.DataFrame):
     for _, row in stack_df.iterrows():
         stack_name = row['stack']
         stack_job_indices = stack_jobs[stack_name]
-        stack_subset = df.iloc[stack_job_indices]
+        stack_subset = df.loc[stack_job_indices]
 
         # Calculate metrics
         avg_score = stack_subset['score'].mean() if 'score' in stack_subset.columns else None
@@ -296,7 +296,7 @@ def render_tech_stacks(df: pd.DataFrame):
         # Calculate average budget for each stack
         stack_budgets = []
         for stack_name, job_count in valid_budgets:
-            stack_subset = df.iloc[stack_jobs[stack_name]]
+            stack_subset = df.loc[stack_jobs[stack_name]]
             fixed_jobs = stack_subset[stack_subset['job_type'] == 'Fixed']
             if not fixed_jobs.empty:
                 avg_budget = fixed_jobs['fixed_price'].mean()
