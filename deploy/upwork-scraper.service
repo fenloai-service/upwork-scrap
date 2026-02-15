@@ -33,8 +33,6 @@ StandardError=append:/var/log/upwork-scrap/scraper.log
 
 # Security hardening
 NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/home/npc/upwork-scrap/data /var/log/upwork-scrap
 
 [Install]
 WantedBy=multi-user.target

@@ -98,6 +98,14 @@ tests/
   conftest.py           # Shared fixtures, playwright mock, tmp_db
 scripts/                # One-off utilities (not part of main pipeline)
 docs/                   # PRD, workflow documentation
+  DEPLOYMENT_GUIDE.md   # Full deployment & operations guide for NPC server
+deploy/                 # Server deployment files
+  server_setup.sh       # One-time server setup (sudo, installs Chrome/Xvfb)
+  deploy.sh             # Push code from local to server (rsync + pip + restart)
+  xvfb.service          # systemd: virtual display :99
+  upwork-scraper.service # systemd: monitor pipeline (--loop mode)
+  upwork-dashboard.service # systemd: Streamlit on :8501
+  watchdog.sh           # Cron health check (auto-restart if stale)
 ```
 
 **Key design decisions**:
@@ -192,6 +200,54 @@ Specific exception types are used throughout (no bare `except Exception` except 
 - **ai_client.py**: `OpenAIError`, `ConnectionError`, `TimeoutError`
 - **config_loader.py**: `ConfigError` (custom) for missing configs
 - **dashboard/**: Specific per-operation (see inline comments)
+
+## Production Deployment (NPC Server)
+
+The pipeline runs in production on the NPC Linux server. Full details in `docs/DEPLOYMENT_GUIDE.md`.
+
+**Server**: `npc@100.98.24.98` (Tailscale IP, password: `asdf`)
+**Project path**: `/home/npc/upwork-scrap`
+**Dashboard**: `http://100.98.24.98:8501`
+
+**Services** (all systemd, auto-start on boot):
+- `xvfb.service` -- virtual display `:99` for Chrome (Cloudflare bypass needs a visible browser)
+- `upwork-scraper.service` -- runs `main.py monitor --new --loop` with `DISPLAY=:99`
+- `upwork-dashboard.service` -- Streamlit on `0.0.0.0:8501`
+
+**SSH access** uses `sshpass` (password-based, matching existing setup in `Codes/npc/`):
+```bash
+sshpass -p "asdf" ssh npc@100.98.24.98              # Connect
+sshpass -p "asdf" ssh npc@100.98.24.98 'command'    # Run remote command
+```
+
+**Deploying code updates**:
+```bash
+# 1. Rsync code (excludes .venv, data, .git, .env, .streamlit)
+sshpass -p "asdf" rsync -avz --delete \
+    --exclude '.venv/' --exclude 'data/' --exclude '.git/' \
+    --exclude '__pycache__/' --exclude '*.pyc' --exclude '.env' \
+    --exclude '.streamlit/' \
+    . npc@100.98.24.98:/home/npc/upwork-scrap/
+
+# 2. Install deps if changed
+sshpass -p "asdf" ssh npc@100.98.24.98 \
+    'cd /home/npc/upwork-scrap && .venv/bin/pip install -q -r requirements.txt'
+
+# 3. Restart services
+sshpass -p "asdf" ssh npc@100.98.24.98 \
+    'echo "asdf" | sudo -S systemctl restart upwork-scraper upwork-dashboard'
+```
+
+**Key server paths**:
+- Logs: `/var/log/upwork-scrap/scraper.log`, `dashboard.log`
+- Chrome profile (Cloudflare tokens): `data/chrome_profile/`
+- Health status: `data/last_run_status.json`
+- Secrets: `.env` (DATABASE_URL, GROQ_API_KEY, GMAIL_APP_PASSWORD)
+
+**Cross-platform Chrome detection** (`scraper/browser.py`):
+- `_find_chrome()` checks platform-specific paths (macOS `/Applications/...`, Linux `/usr/bin/google-chrome-stable` etc.) then falls back to `shutil.which()`
+- Linux Chrome flags: `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-gpu`
+- Non-interactive guard: `warmup_cloudflare()` raises `RuntimeError` instead of blocking on `input()` when `sys.stdin.isatty()` is False (i.e., running under systemd)
 
 ## Legacy / Utility Scripts
 
