@@ -544,6 +544,8 @@ def filter_proposals_by_criteria(df, date_filter: dict, score_range: tuple, stat
                 return False
             try:
                 gen_date = datetime.fromisoformat(date_str)
+                # Strip timezone to compare with naive start_dt/end_dt
+                gen_date = gen_date.replace(tzinfo=None)
                 return start_dt <= gen_date <= end_dt
             except (ValueError, TypeError):
                 return False

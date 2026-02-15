@@ -70,7 +70,6 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
     for prop in shown_proposals:
         job_uid = prop.get('job_uid', 'unknown')
         match_score = prop.get('match_score', 0)
-        proposal_text = prop.get('proposal_text', '')
 
         # Get job details from fetched data
         job = job_details_map.get(job_uid, {})
@@ -121,9 +120,45 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
                 client_info_parts.append(f"⭐ {html.escape(client_rating)}")
             client_html = f'<div style="margin-top:8px;font-size:12px;color:#666;">{" · ".join(client_info_parts)}</div>'
 
-        # Truncate proposal for email
-        proposal_preview = proposal_text[:250] + "..." if len(proposal_text) > 250 else proposal_text
-        proposal_preview = html.escape(proposal_preview)
+        # AI summary
+        ai_summary = job.get('ai_summary', '')
+        ai_summary_html = ""
+        if ai_summary:
+            ai_summary_escaped = html.escape(ai_summary)
+            ai_summary_html = f'''<div style="background:white;padding:12px;border-radius:6px;font-size:13px;color:#333;margin-top:10px;border:1px solid #e0e0e0;">
+                <strong style="color:#1976d2;">🤖 AI Summary:</strong><br>
+                {ai_summary_escaped}
+            </div>'''
+
+        # Job metadata (experience, duration, competition)
+        job_meta_parts = []
+        experience = job.get('experience_level', '')
+        if experience:
+            job_meta_parts.append(f"📊 {html.escape(experience)}")
+        est_time = job.get('est_time', '')
+        if est_time:
+            job_meta_parts.append(f"⏱️ {html.escape(est_time)}")
+        proposals_count = job.get('proposals', '')
+        if proposals_count:
+            job_meta_parts.append(f"👥 {html.escape(proposals_count)} proposals")
+        posted_text = job.get('posted_text', '')
+        if posted_text:
+            job_meta_parts.append(f"🕐 {html.escape(posted_text)}")
+        job_meta_html = ""
+        if job_meta_parts:
+            job_meta_html = f'<div style="margin-top:8px;font-size:12px;color:#555;">{" · ".join(job_meta_parts)}</div>'
+
+        # Key tools from AI classification
+        key_tools_raw = job.get('key_tools', '')
+        try:
+            key_tools_list = json.loads(key_tools_raw) if key_tools_raw else []
+        except (json.JSONDecodeError, TypeError):
+            key_tools_list = []
+        key_tools_html = ""
+        if key_tools_list:
+            tools_display = key_tools_list[:6]
+            tools_tags = " ".join([f'<span style="background:#fff3e0;padding:4px 8px;border-radius:4px;font-size:11px;display:inline-block;margin:2px;color:#e65100;">{html.escape(t)}</span>' for t in tools_display])
+            key_tools_html = f'<div style="margin-top:8px;"><strong style="font-size:11px;color:#888;">KEY TOOLS:</strong> {tools_tags}</div>'
 
         # Score color
         score_color = "#14a800" if match_score >= 70 else ("#f57c00" if match_score >= 40 else "#9e9e9e")
@@ -144,21 +179,23 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
                 </div>
             </div>
 
+            <!-- Job metadata -->
+            {job_meta_html}
+
             <!-- Job description -->
-            {f'<div style="background:#fff;padding:10px;border-radius:6px;font-size:13px;color:#555;margin-bottom:8px;border-left:3px solid #e0e0e0;">{description_preview}</div>' if description_preview else ''}
+            {f'<div style="background:#fff;padding:10px;border-radius:6px;font-size:13px;color:#555;margin-top:8px;border-left:3px solid #e0e0e0;">{description_preview}</div>' if description_preview else ''}
+
+            <!-- AI Summary -->
+            {ai_summary_html}
 
             <!-- Skills -->
             {skills_html}
 
+            <!-- Key tools -->
+            {key_tools_html}
+
             <!-- Client info -->
             {client_html}
-
-            <!-- Proposal text -->
-            <div style="background: white; padding: 12px; border-radius: 6px; font-family: system-ui;
-                        white-space: pre-wrap; font-size: 14px; color: #333; margin-top: 12px; border: 1px solid #e0e0e0;">
-                <strong style="color:#1976d2;">📝 Your Proposal:</strong><br><br>
-                {proposal_preview}
-            </div>
 
             <!-- Action button -->
             <div style="margin-top: 12px; text-align: center;">
