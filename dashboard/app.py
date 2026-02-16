@@ -114,8 +114,18 @@ PROFILE_SKILLS = _load_profile_skills()
 # Helper Functions
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _make_auth_token(username: str, password: str) -> str:
+    """Generate a stable auth token from credentials (survives reloads via query params)."""
+    import hashlib
+    return hashlib.sha256(f"{username}:{password}:upwork-dash".encode()).hexdigest()[:16]
+
+
 def check_password():
-    """Simple password gate using Streamlit secrets. Returns True if authenticated."""
+    """Simple password gate using Streamlit secrets. Returns True if authenticated.
+
+    Uses query params to persist auth across page reloads — Streamlit's session_state
+    is lost on reload, but query params survive in the URL.
+    """
     # Determine where credentials live: [auth] section or top-level
     try:
         if 'auth' in st.secrets:
@@ -129,7 +139,16 @@ def check_password():
     except (KeyError, FileNotFoundError):
         return True  # No secrets file — skip auth
 
+    expected_token = _make_auth_token(expected_user, expected_pass)
+
+    # Check session state first (fastest, works within same session)
     if st.session_state.get('authenticated'):
+        return True
+
+    # Check query params for auth token (survives page reloads)
+    params = st.query_params
+    if params.get("auth") == expected_token:
+        st.session_state['authenticated'] = True
         return True
 
     st.title("Upwork AI Jobs Dashboard")
@@ -143,6 +162,7 @@ def check_password():
     if submitted:
         if username == expected_user and password == expected_pass:
             st.session_state['authenticated'] = True
+            st.query_params["auth"] = expected_token
             st.rerun()
         else:
             st.error("Invalid username or password")
