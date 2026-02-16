@@ -1,9 +1,66 @@
 """Interactive skill exploration and analysis."""
 
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+
+# Bangladesh Standard Time
+BST = timezone(timedelta(hours=6))
+
+
+def parse_job_date(date_str: str) -> datetime:
+    """Parse job posted_date_estimated to datetime."""
+    if not date_str:
+        return datetime(2000, 1, 1)
+    try:
+        if len(date_str) > 10:  # Has time component
+            return datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+        else:  # Date only
+            return datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return datetime(2000, 1, 1)
+
+
+def format_posted_time(posted_date_estimated: str) -> str:
+    """Format posted_date_estimated as human-readable 'X time ago' string."""
+    if not posted_date_estimated:
+        return ""
+
+    job_date = parse_job_date(posted_date_estimated)
+    if job_date.year == 2000:  # Failed to parse
+        return posted_date_estimated
+
+    now = datetime.now(BST).replace(tzinfo=None)
+    diff = now - job_date
+
+    # Less than 1 minute
+    if diff.total_seconds() < 60:
+        return "Just now"
+
+    # Less than 1 hour - show minutes
+    minutes = int(diff.total_seconds() / 60)
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+
+    # Less than 1 day - show hours
+    hours = int(diff.total_seconds() / 3600)
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+
+    # Less than 7 days - show days
+    days = diff.days
+    if days < 7:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+
+    # Less than 30 days - show weeks
+    if days < 30:
+        weeks = days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+
+    # Older - just show the date
+    return job_date.strftime("%b %d, %Y")
 
 
 # Generic/vague terms to filter out - very comprehensive list
@@ -611,9 +668,11 @@ def render_skill_search(df: pd.DataFrame):
 
         display_df = filtered_df.copy()
         display_df['budget'] = display_df.apply(format_budget, axis=1)
+        # Use dynamic time formatting instead of stale posted_text
+        display_df['posted'] = display_df['posted_date_estimated'].apply(format_posted_time)
 
         st.dataframe(
-            display_df[['title', 'job_type', 'budget', 'score', 'posted_text']].head(50),
+            display_df[['title', 'job_type', 'budget', 'score', 'posted']].head(50),
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -621,6 +680,6 @@ def render_skill_search(df: pd.DataFrame):
                 'job_type': 'Type',
                 'budget': 'Budget',
                 'score': st.column_config.NumberColumn('Score', format="%.0f"),
-                'posted_text': 'Posted'
+                'posted': 'Posted'
             }
         )

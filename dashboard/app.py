@@ -526,6 +526,53 @@ def parse_job_date(date_str: str) -> datetime:
         return datetime(2000, 1, 1)
 
 
+def format_posted_time(posted_date_estimated: str) -> str:
+    """Format posted_date_estimated as human-readable 'X time ago' string.
+    
+    Args:
+        posted_date_estimated: Date string in format "YYYY-MM-DD" or "YYYY-MM-DD HH:MM"
+    
+    Returns:
+        Human-readable string like "2 hours ago", "3 days ago", or the date if old
+    """
+    if not posted_date_estimated:
+        return ""
+    
+    job_date = parse_job_date(posted_date_estimated)
+    if job_date.year == 2000:  # Failed to parse
+        return posted_date_estimated
+    
+    now = datetime.now(BST).replace(tzinfo=None)
+    diff = now - job_date
+    
+    # Less than 1 minute
+    if diff.total_seconds() < 60:
+        return "Just now"
+    
+    # Less than 1 hour - show minutes
+    minutes = int(diff.total_seconds() / 60)
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    
+    # Less than 1 day - show hours
+    hours = int(diff.total_seconds() / 3600)
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    
+    # Less than 7 days - show days
+    days = diff.days
+    if days < 7:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    
+    # Less than 30 days - show weeks
+    if days < 30:
+        weeks = days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+    
+    # Older - just show the date
+    return job_date.strftime("%b %d, %Y")
+
+
 def filter_jobs_by_criteria(df, date_filter: dict, score_range: tuple, sql_date_filtered: bool = False) -> pd.DataFrame:
     """Filter jobs DataFrame by date and score range.
 
@@ -958,38 +1005,26 @@ def render_jobs_tab(df, filters):
                 st.rerun()
 
 
-def render_job_card(row, fav_uids=None):
-    """Render a single job card with expandable details.
+def render_job_card(row, idx: int, fav_uids=None):
+    """Render a job card with all details."""
+    score = row.get('score', 0)
+    url = f"https://www.upwork.com{row['url']}" if not row['url'].startswith('http') else row['url']
 
-    Args:
-        row: Job data (DataFrame row or dict-like).
-        fav_uids: Set of favorited job UIDs for O(1) lookup.
-                  If None, falls back to per-card is_favorite() query.
-    """
-    score = row['score']
-
-    # Determine score badge color
+    # Dynamic color based on score
     if score >= 70:
-        score_color = "🟢"
-        border_color = "#14a800"
-    elif score >= 40:
-        score_color = "🟡"
-        border_color = "#f57c00"
+        score_color, border_color = "🟢", "#4caf50"
+    elif score >= 50:
+        score_color, border_color = "🟡", "#ff9800"
     else:
-        score_color = "⚪"
-        border_color = "#dee2e6"
-
-    # Build URL
-    url = row.get('url', '')
-    if url and not url.startswith('http'):
-        url = f"https://www.upwork.com{url}"
+        score_color, border_color = "🔴", "#f44336"
 
     # Budget string
     budget_str = ""
-    if row['job_type'] == 'Fixed' and pd.notna(row.get('fixed_price')):
-        budget_str = f"${row['fixed_price']:,.0f}"
-    elif row['job_type'] == 'Hourly' and pd.notna(row.get('hourly_rate_min')):
-        budget_str = f"${row['hourly_rate_min']:.0f}/hr"
+    if row['job_type'] == "Fixed Price" and pd.notna(row.get('fixed_price')):
+        budget_str = f"${row['fixed_price']:.0f}"
+    elif row['job_type'] == "Hourly":
+        if pd.notna(row.get('hourly_rate_min')):
+            budget_str = f"${row['hourly_rate_min']:.0f}/hr"
         if pd.notna(row.get('hourly_rate_max')):
             budget_str += f" - ${row['hourly_rate_max']:.0f}/hr"
 
@@ -1049,8 +1084,10 @@ def render_job_card(row, fav_uids=None):
             meta_parts.append(row['experience_level'])
         if pd.notna(row.get('est_time')):
             meta_parts.append(row['est_time'])
-        if pd.notna(row.get('posted_text')):
-            meta_parts.append(row['posted_text'])
+        # Use dynamic time calculation instead of stale posted_text
+        posted_time = format_posted_time(row.get('posted_date_estimated', ''))
+        if posted_time:
+            meta_parts.append(posted_time)
         if pd.notna(row.get('proposals')):
             meta_parts.append(f"📊 {row['proposals']}")
 
@@ -1060,21 +1097,37 @@ def render_job_card(row, fav_uids=None):
         key_tools = row.get('key_tools', [])
         if key_tools:
             tool_badges = " ".join([f"<span style='background: #e8f5e9; color: #1b5e20; "
-                                   f"padding: 5px 12px; border-radius: 8px; "
-                                   f"font-size: 11px; font-weight: 600; "
-                                   f"border: 1px solid #c5e1a5; margin-right: 6px;'>{tool}</span>"
+                                   f"padding: 4px 12px; border-radius: 12px; "
+                                   f"font-size: 12px; font-weight: bold; margin-right: 6px;'>🔧 {tool}</span>"
                                    for tool in key_tools[:5]])
             st.markdown(tool_badges, unsafe_allow_html=True)
 
-        # Expandable description
-        with st.expander("📄 View Full Description"):
-            st.markdown(row.get('description', 'No description available.'))
+        # Skills
+        skills = row.get('skills', [])
+        if skills:
+            skill_badges = " ".join([f"<span style='background: #f3e5f5; color: #4a148c; "
+                                    f"padding: 4px 12px; border-radius: 12px; "
+                                    f"font-size: 12px; margin-right: 6px;'>{skill}</span>"
+                                    for skill in skills[:10]])
+            st.markdown(skill_badges, unsafe_allow_html=True)
 
-            # Skills
-            skills = row.get('skills_list', [])
-            if skills:
-                st.markdown("**Skills:**")
-                st.markdown(", ".join(skills[:20]))
+        # Description
+        description = row.get('description', '')
+        if description:
+            with st.expander("📄 Full Description"):
+                st.markdown(description)
+
+        # Client Info
+        client_info_parts = []
+        if pd.notna(row.get('client_location')):
+            client_info_parts.append(f"📍 {row['client_location']}")
+        if pd.notna(row.get('client_spent')):
+            client_info_parts.append(f"💰 Spent: {row['client_spent']}")
+        if pd.notna(row.get('client_rating')):
+            client_info_parts.append(f"⭐ {row['client_rating']}")
+
+        if client_info_parts:
+            st.markdown(" • ".join(client_info_parts))
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1715,9 +1768,11 @@ def render_proposal_card(prop, read_only=False):
         est_time = prop.get('job_est_time') or ''
         if est_time:
             meta_parts.append(est_time)
-        posted_text = prop.get('job_posted_text') or prop.get('posted_date_estimated') or ''
-        if posted_text:
-            meta_parts.append(f"Posted {posted_text}" if not str(posted_text).lower().startswith('posted') else posted_text)
+        # Use dynamic time calculation instead of stale posted_text
+        posted_date = prop.get('posted_date_estimated') or ''
+        posted_time = format_posted_time(posted_date)
+        if posted_time:
+            meta_parts.append(posted_time)
         job_proposals = prop.get('job_proposals') or ''
         if job_proposals:
             meta_parts.append(f"📊 {job_proposals}")
