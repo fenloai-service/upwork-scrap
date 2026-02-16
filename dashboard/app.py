@@ -215,9 +215,10 @@ def load_proposals_data():
         return []
 
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+# Cache disabled temporarily to ensure fresh data after date migration
+# @st.cache_data(ttl=300)
 def load_jobs_data(start_date_str=None, end_date_str=None):
-    """Load and prepare jobs data with caching.
+    """Load and prepare jobs data (cache temporarily disabled).
 
     Args:
         start_date_str: Optional start date (YYYY-MM-DD) for SQL filtering.
