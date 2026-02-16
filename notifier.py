@@ -80,7 +80,10 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         # Get job details from fetched data
         job = job_details_map.get(job_uid, {})
         job_title = html.escape(job.get('title', f'Job {job_uid[:8]}'))
-        job_url = html.escape(job.get('url', f"https://www.upwork.com/jobs/{job_uid}"))
+        raw_url = job.get('url', f"/jobs/{job_uid}")
+        if raw_url.startswith('/'):
+            raw_url = f"https://www.upwork.com{raw_url}"
+        job_url = html.escape(raw_url)
 
         # Job description (truncated)
         description = job.get('description', '')
