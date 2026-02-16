@@ -168,9 +168,11 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
             tools_tags = " ".join([f'<span style="background:#fef3c7;padding:5px 10px;border-radius:4px;font-size:11px;display:inline-block;margin:3px 4px 3px 0;color:#92400e;font-weight:500;">{html.escape(t)}</span>' for t in tools_display])
             key_tools_html = f'<div style="margin-top:10px;">{tools_tags}</div>'
 
-        # Score badge color
-        score_color = "#14a800" if match_score >= 70 else ("#f59e0b" if match_score >= 40 else "#6b7280")
-        score_bg = "#ecfdf5" if match_score >= 70 else ("#fef3c7" if match_score >= 40 else "#f3f4f6")
+        # Score badge color (thresholds from email config)
+        score_high = email_cfg.get('notifications', {}).get('score_threshold_high', 70)
+        score_mid = email_cfg.get('notifications', {}).get('score_threshold_mid', 40)
+        score_color = "#14a800" if match_score >= score_high else ("#f59e0b" if match_score >= score_mid else "#6b7280")
+        score_bg = "#ecfdf5" if match_score >= score_high else ("#fef3c7" if match_score >= score_mid else "#f3f4f6")
 
         proposal_cards += f"""
         <div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 16px;

@@ -34,6 +34,14 @@ MAX_DAILY_PROPOSALS = _proposal_cfg.get("max_daily_proposals", 20)
 RETRY_ATTEMPTS = _proposal_cfg.get("retry_attempts", 3)
 RETRY_DELAYS = _proposal_cfg.get("retry_delays", [5, 15, 60])
 
+# AI generation parameters (from ai_models config)
+_ai_cfg = load_config("ai_models", top_level_key="ai_models", default={})
+_proposal_ai = _ai_cfg.get("proposal_generation", {})
+PROPOSAL_MAX_TOKENS = _proposal_ai.get("max_tokens", 2048)
+PROPOSAL_TEMPERATURE = _proposal_ai.get("temperature", 0.7)
+MAX_PROJECTS_PER_PROPOSAL = _proposal_cfg.get("max_projects_per_proposal", 2)
+DELAY_BETWEEN_PROPOSALS = _proposal_cfg.get("delay_between_proposals", 0.5)
+
 
 def load_config_file(filename: str) -> dict:
     """Load and parse a config file — tries DB first, falls back to YAML."""
@@ -67,7 +75,7 @@ def check_daily_limit() -> bool:
 
 
 
-def select_relevant_projects(job: dict, all_projects: list[dict], max_projects: int = 2) -> list[dict]:
+def select_relevant_projects(job: dict, all_projects: list[dict], max_projects: int = None) -> list[dict]:
     """
     Select 1-2 most relevant projects based on technology overlap with job.
 
@@ -79,6 +87,8 @@ def select_relevant_projects(job: dict, all_projects: list[dict], max_projects: 
     Returns:
         List of selected project dicts, sorted by relevance
     """
+    if max_projects is None:
+        max_projects = MAX_PROJECTS_PER_PROPOSAL
     # Parse job technologies
     try:
         job_tools = json.loads(job.get("key_tools", "[]"))
@@ -246,13 +256,13 @@ Return ONLY the proposal text. No markdown formatting, no subject line, no pream
     return prompt
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=5, max=60))
+@retry(stop=stop_after_attempt(RETRY_ATTEMPTS), wait=wait_exponential(multiplier=1, min=5, max=60))
 def _call_ai_for_proposal(client: OpenAI, model_name: str, prompt: str) -> str:
     """Make the actual API call with tenacity retry and exponential backoff."""
     response = client.chat.completions.create(
         model=model_name,
-        max_tokens=2048,
-        temperature=0.7,
+        max_tokens=PROPOSAL_MAX_TOKENS,
+        temperature=PROPOSAL_TEMPERATURE,
         messages=[
             {
                 "role": "system",
@@ -457,7 +467,7 @@ def generate_proposals_batch(matched_jobs: list[dict], dry_run: bool = False) ->
                 print(f"     ✅ Generated ({len(proposal_text)} chars)")
 
                 # Small delay to avoid rate limits
-                time.sleep(0.5)
+                time.sleep(DELAY_BETWEEN_PROPOSALS)
 
         except (ConnectionError, TimeoutError, IOError, ValueError, OSError) as e:
             log.error(f"Failed to generate proposal for {job_uid}: {e}")

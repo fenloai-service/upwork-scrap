@@ -8,27 +8,20 @@ import config
 from database.db import get_all_jobs
 
 
-# Skills that define the user's profile for scoring
-PROFILE_SKILLS = {
-    "ai", "artificial intelligence", "machine learning", "deep learning",
-    "nlp", "natural language processing", "computer vision", "llm",
-    "gpt", "chatgpt", "openai", "generative ai", "rag",
-    "langchain", "prompt engineering", "fine-tuning", "neural network",
-    "transformer", "hugging face", "pytorch", "tensorflow",
-    "chatbot", "ai chatbot", "conversational ai",
-    "python", "javascript", "typescript", "react", "react.js", "next.js",
-    "node.js", "node", "express", "fastapi", "flask", "django",
-    "html", "css", "tailwind css", "vue.js", "angular",
-    "postgresql", "mongodb", "mysql", "redis", "sql",
-    "api", "rest api", "graphql", "api development", "api integration",
-    "web development", "full stack development", "full-stack development",
-    "web application", "web app", "saas",
-    "aws", "google cloud platform", "azure", "docker", "kubernetes",
-    "data science", "data analysis", "pandas", "data engineering",
-    "vector database", "pinecone", "chromadb", "weaviate",
-    "web scraping", "automation", "zapier", "make", "n8n",
-    "stripe", "payment integration",
-}
+# Skills that define the user's profile for scoring — loaded from user_profile config
+def _load_profile_skills() -> set:
+    """Load profile skills from user_profile config (DB-first, YAML fallback)."""
+    try:
+        from config_loader import load_config
+        profile_cfg = load_config("user_profile", top_level_key="profile", default={})
+        skills_list = profile_cfg.get("skills", [])
+        if skills_list:
+            return {s.lower() for s in skills_list}
+    except Exception:
+        pass
+    return set()
+
+PROFILE_SKILLS = _load_profile_skills()
 
 BUDGET_MIN = 500
 BUDGET_MAX = 2000

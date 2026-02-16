@@ -178,9 +178,11 @@ def _calculate_budget_fit(job: dict, prefs: dict) -> tuple[float, str]:
         fixed_min = prefs["budget"].get("fixed_min", 1000)
         fixed_max = prefs["budget"].get("fixed_max", 10000)
 
+        budget_flex_low = prefs.get("budget", {}).get("flexibility_low", 0.8)
+        budget_flex_high = prefs.get("budget", {}).get("flexibility_high", 1.5)
         if fixed_min <= fixed_price <= fixed_max:
             return 1.0, f"${fixed_price:,.0f} fixed (within ${fixed_min:,}-${fixed_max:,} range)"
-        elif (fixed_price >= fixed_min * 0.8) or (fixed_price <= fixed_max * 1.5):
+        elif (fixed_price >= fixed_min * budget_flex_low) or (fixed_price <= fixed_max * budget_flex_high):
             return 0.5, f"${fixed_price:,.0f} fixed (near target range)"
         else:
             return 0.0, f"${fixed_price:,.0f} fixed (outside range)"
@@ -191,10 +193,11 @@ def _calculate_budget_fit(job: dict, prefs: dict) -> tuple[float, str]:
             return 0.5, "Hourly (rate not specified)"
 
         config_hourly_min = prefs["budget"].get("hourly_min", 40)
+        hourly_flex = prefs.get("budget", {}).get("flexibility_low", 0.8)
 
         if hourly_min >= config_hourly_min:
             return 1.0, f"${hourly_min:.0f}/hr (meets ${config_hourly_min}/hr minimum)"
-        elif hourly_min >= config_hourly_min * 0.8:
+        elif hourly_min >= config_hourly_min * hourly_flex:
             return 0.5, f"${hourly_min:.0f}/hr (below target)"
         else:
             return 0.0, f"${hourly_min:.0f}/hr (too low)"
@@ -462,8 +465,9 @@ def get_matching_jobs(jobs: list[dict], preferences: dict = None, threshold: flo
         print(f"    - Jobs scoring 30+: {above_30}")
         print(f"  Tip: Lower threshold in config/job_preferences.yaml (currently {threshold})")
 
-        # Try relaxed thresholds automatically
-        for relaxed in [50, 30]:
+        # Try relaxed thresholds automatically (configurable via preferences)
+        relax_thresholds = preferences.get("auto_relax_thresholds", [50, 30])
+        for relaxed in relax_thresholds:
             if relaxed < threshold:
                 relaxed_matches = [j for j in scored_jobs if j["match_score"] >= relaxed]
                 if relaxed_matches:

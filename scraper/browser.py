@@ -292,7 +292,8 @@ async def human_delay(min_sec=None, max_sec=None):
 
 async def human_scroll(page: Page):
     """Scroll the page in a human-like fashion to trigger lazy loading."""
-    viewport_height = 900
+    viewport = page.viewport_size or {}
+    viewport_height = viewport.get("height", 900)
     scroll_distance = random.randint(300, 600)
     total_scrolled = 0
     page_height = await page.evaluate("document.body.scrollHeight")

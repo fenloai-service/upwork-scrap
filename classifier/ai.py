@@ -32,7 +32,11 @@ from database.db import (
 log = logging.getLogger(__name__)
 
 _ai_cfg = load_config("ai_models", top_level_key="ai_models", default={})
-BATCH_SIZE = _ai_cfg.get("classification", {}).get("batch_size", 20)
+_classification_cfg = _ai_cfg.get("classification", {})
+BATCH_SIZE = _classification_cfg.get("batch_size", 20)
+CLASSIFICATION_MAX_TOKENS = _classification_cfg.get("max_tokens", 4096)
+RATE_LIMIT_WAIT = _classification_cfg.get("rate_limit_wait_seconds", 30)
+DELAY_BETWEEN_BATCHES = _classification_cfg.get("delay_between_batches", 0.5)
 RESULTS_FILE = config.DATA_DIR / "classified_results.jsonl"
 
 CATEGORIES = [
@@ -135,7 +139,7 @@ def _repair_json(text):
     return text
 
 
-MAX_RETRIES = 2
+MAX_RETRIES = _classification_cfg.get("max_retries", 2)
 
 
 def classify_batch(client, batch, model_name="llama3:8b", provider_name="ollama_local"):
@@ -159,7 +163,7 @@ def classify_batch(client, batch, model_name="llama3:8b", provider_name="ollama_
     for attempt in range(1 + MAX_RETRIES):
         response = client.chat.completions.create(
             model=model_name,
-            max_tokens=4096,
+            max_tokens=CLASSIFICATION_MAX_TOKENS,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -214,7 +218,7 @@ def _process_batch(client, batch, model_name, batch_label, results_file, provide
     return saved, missing_jobs
 
 
-RETRY_PASSES = 2
+RETRY_PASSES = _classification_cfg.get("retry_passes", 2)
 
 
 def classify_all():
@@ -270,10 +274,10 @@ def classify_all():
             errors += 1
             failed_jobs.extend(batch)
             if "rate" in str(e).lower():
-                print("  Rate limited, waiting 30s...")
-                time.sleep(30)
+                print(f"  Rate limited, waiting {RATE_LIMIT_WAIT}s...")
+                time.sleep(RATE_LIMIT_WAIT)
 
-        time.sleep(0.5)
+        time.sleep(DELAY_BETWEEN_BATCHES)
 
     # Retry failed/missing jobs in smaller batches
     retry_batch_size = max(BATCH_SIZE // 2, 5)
@@ -300,7 +304,7 @@ def classify_all():
                 print(f"  {label}: Error — {e}")
                 next_failed.extend(batch)
 
-            time.sleep(0.5)
+            time.sleep(DELAY_BETWEEN_BATCHES)
 
         failed_jobs = next_failed
 

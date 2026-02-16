@@ -139,7 +139,7 @@ async def cmd_scrape_full():
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
                     print("  ⏳ Cooling down between keywords...")
-                    await human_delay(8, 15)
+                    await human_delay(config.MIN_DELAY_SECONDS, config.MAX_DELAY_SECONDS)
         finally:
             try:
                 await browser.close()
@@ -200,7 +200,7 @@ async def cmd_scrape_new():
                         page = await get_page(browser)
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
-                    await human_delay(6, 12)
+                    await human_delay(config.MIN_DELAY_SECONDS, config.MAX_DELAY_SECONDS)
         finally:
             try:
                 await browser.close()
@@ -562,7 +562,7 @@ async def _stage_scrape(existing_uids: set) -> tuple[int, int, set]:
                         page = await get_page(browser)
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
-                    await human_delay(6, 12)
+                    await human_delay(config.MIN_DELAY_SECONDS, config.MAX_DELAY_SECONDS)
         finally:
             try:
                 await browser.close()

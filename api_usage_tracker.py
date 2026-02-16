@@ -4,8 +4,15 @@ import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 import config
+from config_loader import load_config
 
 USAGE_DB = config.DATA_DIR / "api_usage.db"
+
+# Load rate limit settings from ai_models config
+_ai_cfg = load_config("ai_models", top_level_key="ai_models", default={})
+_rate_limits = _ai_cfg.get("rate_limits", {})
+DEFAULT_DAILY_TOKEN_LIMIT = _rate_limits.get("daily_token_limit", 100000)
+DEFAULT_WARN_THRESHOLD = _rate_limits.get("warn_threshold", 0.8)
 
 def init_usage_db():
     """Initialize API usage tracking database."""
@@ -54,12 +61,16 @@ def record_usage(provider: str, model: str, tokens_used: int):
     conn.close()
 
 
-def check_daily_limit(provider: str = "groq", limit: int = 100000, warn_threshold: float = 0.8) -> dict:
+def check_daily_limit(provider: str = "groq", limit: int = None, warn_threshold: float = None) -> dict:
     """Check if approaching or exceeded daily limit.
 
     Returns:
         dict with 'can_proceed', 'used', 'limit', 'remaining', 'warning'
     """
+    if limit is None:
+        limit = DEFAULT_DAILY_TOKEN_LIMIT
+    if warn_threshold is None:
+        warn_threshold = DEFAULT_WARN_THRESHOLD
     used = get_tokens_used_today(provider)
     remaining = max(0, limit - used)
     warn_at = limit * warn_threshold
