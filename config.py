@@ -66,6 +66,9 @@ SCROLL_DELAY_MIN = _safety.get("scroll_delay_min", 1.0)
 SCROLL_DELAY_MAX = _safety.get("scroll_delay_max", 3.0)
 PAGE_LOAD_TIMEOUT = _safety.get("page_load_timeout", 30000)
 
+# ── Monitor Settings ─────────────────────────────────────────────────────
+MONITOR_MAX_PAGES = _scraping_cfg.get("monitor_max_pages", 2)
+
 # ── Duplicate Handling ─────────────────────────────────────────────────────────
 
 _dup_cfg = _scraping_cfg.get("duplicate_handling", {})

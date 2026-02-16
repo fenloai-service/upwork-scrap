@@ -20,6 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 load_dotenv()
 
 import config
+from config_loader import load_config
 from ai_client import get_client
 from api_usage_tracker import check_daily_limit as check_api_limit, record_usage
 from database.db import (
@@ -30,7 +31,8 @@ from database.db import (
 
 log = logging.getLogger(__name__)
 
-BATCH_SIZE = 20  # Jobs per API call
+_ai_cfg = load_config("ai_models", top_level_key="ai_models", default={})
+BATCH_SIZE = _ai_cfg.get("classification", {}).get("batch_size", 20)
 RESULTS_FILE = config.DATA_DIR / "classified_results.jsonl"
 
 CATEGORIES = [

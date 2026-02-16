@@ -171,7 +171,7 @@ async def cmd_scrape_new():
 
             for i, keyword in enumerate(config.KEYWORDS):
                 print(f"[{i+1}/{len(config.KEYWORDS)}] Checking new: '{keyword}'")
-                jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=known_uids)
+                jobs = await scrape_keyword(page, keyword, max_pages=config.MONITOR_MAX_PAGES, known_uids=known_uids)
                 if jobs:
                     inserted, updated = upsert_jobs(jobs)
                     total_new += inserted
@@ -530,7 +530,7 @@ async def _stage_scrape(existing_uids: set) -> tuple[int, int, set]:
 
             for i, keyword in enumerate(config.KEYWORDS):
                 print(f"  [{i+1}/{len(config.KEYWORDS)}] Scraping: '{keyword}'")
-                jobs = await scrape_keyword(page, keyword, max_pages=2, known_uids=scrape_known_uids)
+                jobs = await scrape_keyword(page, keyword, max_pages=config.MONITOR_MAX_PAGES, known_uids=scrape_known_uids)
 
                 if jobs:
                     scraped_uids.update(job["uid"] for job in jobs)

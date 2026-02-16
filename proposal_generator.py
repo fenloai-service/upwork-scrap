@@ -26,12 +26,13 @@ log = logging.getLogger(__name__)
 
 RESULTS_FILE = config.DATA_DIR / "proposal_results.jsonl"
 
-# Rate limiting
-MAX_DAILY_PROPOSALS = 20
-
-# Retry configuration
-RETRY_ATTEMPTS = 3
-RETRY_DELAYS = [5, 15, 60]  # seconds: exponential backoff
+# Load from config (DB-first, YAML fallback)
+_proposal_cfg = load_config(
+    "proposal_guidelines", top_level_key="guidelines", default={}
+)
+MAX_DAILY_PROPOSALS = _proposal_cfg.get("max_daily_proposals", 20)
+RETRY_ATTEMPTS = _proposal_cfg.get("retry_attempts", 3)
+RETRY_DELAYS = _proposal_cfg.get("retry_delays", [5, 15, 60])
 
 
 def load_config_file(filename: str) -> dict:
