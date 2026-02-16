@@ -50,6 +50,7 @@ from database.db import (
     remove_favorite,
     is_favorite,
     get_favorite_count,
+    get_favorite_uids,
     update_favorite_notes,
     get_proposals,
     update_proposal_status,
@@ -60,6 +61,7 @@ from database.db import (
     save_setting,
     get_scrape_runs,
     insert_scrape_run,
+    get_jobs_by_date_range,
 )
 from dashboard.analytics import (
     jobs_to_dataframe,
@@ -183,6 +185,15 @@ def should_show_approved_only():
 
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
+def load_favorite_uids():
+    """Load favorite UIDs with caching for batch lookups."""
+    try:
+        return get_favorite_uids()
+    except (OSError, KeyError):
+        return set()
+
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_proposals_data():
     """Load proposals data with caching."""
     try:
@@ -192,10 +203,18 @@ def load_proposals_data():
 
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def load_jobs_data():
-    """Load and prepare jobs data with caching."""
+def load_jobs_data(start_date_str=None, end_date_str=None):
+    """Load and prepare jobs data with caching.
+
+    Args:
+        start_date_str: Optional start date (YYYY-MM-DD) for SQL filtering.
+        end_date_str: Optional end date (YYYY-MM-DD) for SQL filtering.
+    """
     init_db()
-    jobs = get_all_jobs()
+    if start_date_str and end_date_str:
+        jobs = get_jobs_by_date_range(start_date_str, end_date_str)
+    else:
+        jobs = get_all_jobs()
     if not jobs:
         return None, None
 
@@ -206,16 +225,49 @@ def load_jobs_data():
         if col in df.columns:
             df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) and x.strip() else (x if isinstance(x, list) else []))
 
-    # Add unified match score using matcher.score_job()
-    try:
-        preferences = load_preferences()
-        df['score'] = df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
-        df['match_reasons'] = df.apply(lambda row: get_match_reasons(row.to_dict(), preferences), axis=1)
-    except (KeyError, ValueError, FileNotFoundError, TypeError) as e:
-        # Fallback to simple scoring if matcher fails
-        st.warning(f"Using fallback scoring (matcher error: {e})")
-        df['score'] = df.apply(lambda row: score_job_fallback(row), axis=1)
-        df['match_reasons'] = [[]]
+    # Use pre-computed match scores from DB where available
+    has_precomputed = 'match_score' in df.columns and df['match_score'].notna().any()
+
+    if has_precomputed:
+        # Use DB scores, fill NULLs with on-demand scoring
+        needs_scoring = df['match_score'].isna()
+        if needs_scoring.any():
+            try:
+                preferences = load_preferences()
+                df.loc[needs_scoring, 'score'] = df.loc[needs_scoring].apply(
+                    lambda row: score_job_unified(row.to_dict(), preferences), axis=1
+                )
+            except (KeyError, ValueError, FileNotFoundError, TypeError):
+                df.loc[needs_scoring, 'score'] = df.loc[needs_scoring].apply(
+                    lambda row: score_job_fallback(row), axis=1
+                )
+        df['score'] = df['score'] if 'score' in df.columns else df['match_score']
+        # Fill score from match_score where score column not yet set
+        df['score'] = df['score'].fillna(df['match_score'])
+
+        # Parse match_reasons from JSON string
+        def _parse_reasons(val):
+            if not val:
+                return []
+            try:
+                return json.loads(val) if isinstance(val, str) else val
+            except (json.JSONDecodeError, TypeError):
+                return []
+
+        if 'match_reasons' in df.columns:
+            df['match_reasons'] = df['match_reasons'].apply(_parse_reasons)
+        else:
+            df['match_reasons'] = [[]] * len(df)
+    else:
+        # No pre-computed scores — score all jobs on the fly (legacy path)
+        try:
+            preferences = load_preferences()
+            df['score'] = df.apply(lambda row: score_job_unified(row.to_dict(), preferences), axis=1)
+            df['match_reasons'] = df.apply(lambda row: get_match_reasons(row.to_dict(), preferences), axis=1)
+        except (KeyError, ValueError, FileNotFoundError, TypeError) as e:
+            st.warning(f"Using fallback scoring (matcher error: {e})")
+            df['score'] = df.apply(lambda row: score_job_fallback(row), axis=1)
+            df['match_reasons'] = [[]] * len(df)
 
     # Add budget for sorting/filtering
     df['budget'] = df.apply(get_budget, axis=1)
@@ -461,21 +513,22 @@ def parse_job_date(date_str: str) -> datetime:
         return datetime(2000, 1, 1)
 
 
-def filter_jobs_by_criteria(df, date_filter: dict, score_range: tuple) -> pd.DataFrame:
+def filter_jobs_by_criteria(df, date_filter: dict, score_range: tuple, sql_date_filtered: bool = False) -> pd.DataFrame:
     """Filter jobs DataFrame by date and score range.
 
     Args:
         df: Jobs DataFrame
         date_filter: Date filter dict from sidebar (mode, start_date, end_date)
         score_range: Tuple of (min_score, max_score)
+        sql_date_filtered: If True, skip Python date filtering (already done in SQL)
 
     Returns:
         Filtered DataFrame
     """
     filtered = df.copy()
 
-    # Apply date filter
-    if date_filter["mode"] != "all" and date_filter["start_date"]:
+    # Apply date filter (skip if already SQL-filtered)
+    if not sql_date_filtered and date_filter["mode"] != "all" and date_filter["start_date"]:
         start_dt = datetime.combine(
             date_filter["start_date"] if hasattr(date_filter["start_date"], 'year') else date_filter["start_date"],
             datetime.min.time()
@@ -744,6 +797,16 @@ def render_sidebar(df):
         st.session_state.clear()
         st.rerun()
 
+    # Proposals status filter (displayed in sidebar, used by proposals tab)
+    st.sidebar.markdown("---")
+    filters['proposals_status_filter'] = st.sidebar.multiselect(
+        "📊 Proposal Status",
+        options=["pending_review", "approved", "submitted", "rejected"],
+        default=["pending_review"],
+        key="proposals_status_filter",
+        help="Filter proposals by status"
+    )
+
     # Quick Filters
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚡ Quick Filters")
@@ -764,6 +827,7 @@ def render_sidebar(df):
 # Main Tabs
 # ══════════════════════════════════════════════════════════════════════════════
 
+@st.fragment
 def render_jobs_tab(df, filters):
     """Render the Jobs tab with filtered and sorted job listings."""
 
@@ -771,7 +835,8 @@ def render_jobs_tab(df, filters):
     date_filter = filters.get('date_filter', {"mode": "all", "start_date": None, "end_date": None})
     score_range = filters.get('score_range', (0, 100))
 
-    df = filter_jobs_by_criteria(df, date_filter, score_range)
+    # Date filtering is already done in SQL at load time, skip redundant Python filtering
+    df = filter_jobs_by_criteria(df, date_filter, score_range, sql_date_filtered=(date_filter["mode"] != "all"))
 
     # Show filter summary
     if date_filter["mode"] != "all":
@@ -845,9 +910,10 @@ def render_jobs_tab(df, filters):
 
     st.markdown(f"*Showing jobs {start_idx + 1}-{end_idx} of {len(sorted_df)}*")
 
-    # Render job cards
+    # Render job cards (batch favorites check)
+    fav_uids = load_favorite_uids()
     for idx, row in page_df.iterrows():
-        render_job_card(row)
+        render_job_card(row, fav_uids=fav_uids)
 
     # Pagination controls
     if total_pages > 1:
@@ -879,8 +945,14 @@ def render_jobs_tab(df, filters):
                 st.rerun()
 
 
-def render_job_card(row):
-    """Render a single job card with expandable details."""
+def render_job_card(row, fav_uids=None):
+    """Render a single job card with expandable details.
+
+    Args:
+        row: Job data (DataFrame row or dict-like).
+        fav_uids: Set of favorited job UIDs for O(1) lookup.
+                  If None, falls back to per-card is_favorite() query.
+    """
     score = row['score']
 
     # Determine score badge color
@@ -924,17 +996,19 @@ def render_job_card(row):
         with col2:
             job_uid = row.get('uid', '')
             if job_uid:
-                is_fav = is_favorite(job_uid)
+                is_fav = (job_uid in fav_uids) if fav_uids is not None else is_favorite(job_uid)
                 bookmark_key = f"bookmark_{job_uid}"
 
                 if is_fav:
                     if st.button("⭐", key=bookmark_key, help="Remove from favorites"):
                         remove_favorite(job_uid)
-                        st.rerun()
+                        load_favorite_uids.clear()
+                        st.rerun(scope="app")
                 else:
                     if st.button("☆", key=bookmark_key, help="Add to favorites"):
                         add_favorite(job_uid)
-                        st.rerun()
+                        load_favorite_uids.clear()
+                        st.rerun(scope="app")
         with col3:
             st.markdown(f"<div style='text-align: right; font-size: 24px;'>{score_color} <b>{score}</b></div>",
                        unsafe_allow_html=True)
@@ -992,6 +1066,7 @@ def render_job_card(row):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+@st.fragment
 def render_analytics_tab(df, filters):
     """Render the improved Analytics tab with market intelligence."""
     st.markdown("### 📊 Market Intelligence Dashboard")
@@ -1001,8 +1076,8 @@ def render_analytics_tab(df, filters):
     date_filter = filters.get('date_filter', {"mode": "all", "start_date": None, "end_date": None})
     score_range = filters.get('score_range', (0, 100))
 
-    # Apply date and score filters
-    filtered_df = filter_jobs_by_criteria(df, date_filter, score_range)
+    # Apply date and score filters (date already SQL-filtered at load time)
+    filtered_df = filter_jobs_by_criteria(df, date_filter, score_range, sql_date_filtered=(date_filter["mode"] != "all"))
 
     # Apply additional filters (search, category, tool, job_type, etc.)
     filtered_df = filter_jobs(filtered_df, filters)
@@ -1209,19 +1284,12 @@ def render_traditional_analytics(display_df):
         st.info("No date data available for timeline")
 
 
+@st.fragment
 def render_proposals_tab(filters=None):
     """Render the Proposals tab with proposal cards and management UI."""
 
-    # Proposals-specific Status Filter in sidebar
-    with st.sidebar:
-        st.markdown("---")
-        status_filter = st.multiselect(
-            "📊 Proposal Status",
-            options=["pending_review", "approved", "submitted", "rejected"],
-            default=["pending_review"],
-            key="proposals_status_filter",
-            help="Filter proposals by status"
-        )
+    # Read status filter from sidebar (moved to render_sidebar to avoid st.sidebar in fragment)
+    status_filter = filters.get('proposals_status_filter', ["pending_review"]) if filters else ["pending_review"]
 
     st.markdown("### ✍️ Proposals")
 
@@ -1363,7 +1431,7 @@ def render_proposals_tab(filters=None):
                 st.success(f"✅ Approved {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 load_proposals_data.clear()
-                st.rerun()
+                st.rerun(scope="app")
 
         with col2:
             if st.button("❌ Reject Selected", width="stretch"):
@@ -1372,7 +1440,7 @@ def render_proposals_tab(filters=None):
                 st.success(f"Rejected {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 load_proposals_data.clear()
-                st.rerun()
+                st.rerun(scope="app")
 
         with col3:
             if st.button("🔄 Reset Selected", width="stretch"):
@@ -1381,12 +1449,12 @@ def render_proposals_tab(filters=None):
                 st.success(f"Reset {len(st.session_state.selected_proposals)} proposals")
                 st.session_state.selected_proposals.clear()
                 load_proposals_data.clear()
-                st.rerun()
+                st.rerun(scope="app")
 
         with col4:
             if st.button("🗑️ Clear Selection", width="stretch"):
                 st.session_state.selected_proposals.clear()
-                st.rerun()
+                st.rerun(scope="app")
 
         st.markdown("---")
 
@@ -1444,13 +1512,63 @@ def render_proposals_tab(filters=None):
 
     st.markdown("---")
 
-    # Show filtered count
-    if len(prop_df) < total:
-        st.markdown(f"*Showing {len(prop_df)} of {total} proposals*")
+    if prop_df.empty:
+        st.info("No proposals to display.")
+        return
+
+    # Pagination
+    proposals_per_page = 25
+    total_proposals = len(prop_df)
+    total_pages = (total_proposals - 1) // proposals_per_page + 1
+
+    if 'proposals_page_num' not in st.session_state:
+        st.session_state.proposals_page_num = 1
+
+    # Clamp page number to valid range
+    if st.session_state.proposals_page_num > total_pages:
+        st.session_state.proposals_page_num = total_pages
+    if st.session_state.proposals_page_num < 1:
+        st.session_state.proposals_page_num = 1
+
+    page_num = st.session_state.proposals_page_num
+    start_idx = (page_num - 1) * proposals_per_page
+    end_idx = min(start_idx + proposals_per_page, total_proposals)
+    page_df = prop_df.iloc[start_idx:end_idx]
+
+    st.markdown(f"*Showing proposals {start_idx + 1}-{end_idx} of {total_proposals}*")
 
     # Render proposal cards
-    for idx, row in prop_df.iterrows():
+    for idx, row in page_df.iterrows():
         render_proposal_card(row.to_dict(), read_only=read_only)
+
+    # Pagination controls
+    if total_pages > 1:
+        st.markdown("---")
+        col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
+
+        with col1:
+            if st.button("⏮️ First", disabled=(page_num == 1), key="prop_first"):
+                st.session_state.proposals_page_num = 1
+                st.rerun()
+
+        with col2:
+            if st.button("◀️ Prev", disabled=(page_num == 1), key="prop_prev"):
+                st.session_state.proposals_page_num -= 1
+                st.rerun()
+
+        with col3:
+            st.markdown(f"<div style='text-align: center; padding: 8px;'>Page {page_num} of {total_pages}</div>",
+                       unsafe_allow_html=True)
+
+        with col4:
+            if st.button("Next ▶️", disabled=(page_num == total_pages), key="prop_next"):
+                st.session_state.proposals_page_num += 1
+                st.rerun()
+
+        with col5:
+            if st.button("Last ⏭️", disabled=(page_num == total_pages), key="prop_last"):
+                st.session_state.proposals_page_num = total_pages
+                st.rerun()
 
 
 def render_proposal_card(prop, read_only=False):
@@ -1640,25 +1758,25 @@ def render_proposal_card(prop, read_only=False):
                     if st.button("✅ Approve", key=f"approve_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'approved'):
                             load_proposals_data.clear()
-                            st.rerun()
+                            st.rerun(scope="app")
             with act2:
                 if 'rejected' in allowed_statuses:
                     if st.button("❌ Reject", key=f"reject_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'rejected'):
                             load_proposals_data.clear()
-                            st.rerun()
+                            st.rerun(scope="app")
             with act3:
                 if 'submitted' in allowed_statuses:
                     if st.button("🚀 Submitted", key=f"submit_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'submitted'):
                             load_proposals_data.clear()
-                            st.rerun()
+                            st.rerun(scope="app")
             with act4:
                 if 'pending_review' in allowed_statuses:
                     if st.button("🔄 Reset", key=f"reset_{job_uid}", use_container_width=True):
                         if update_proposal_status(proposal_id, 'pending_review'):
                             load_proposals_data.clear()
-                            st.rerun()
+                            st.rerun(scope="app")
             with toggle_col:
                 toggle_label = "📄 Hide Proposal" if st.session_state[show_key] else "📄 Show Proposal"
                 if st.button(toggle_label, key=f"toggle_proposal_{job_uid}", use_container_width=True):
@@ -1779,6 +1897,7 @@ def render_proposal_card(prop, read_only=False):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+@st.fragment
 def render_favorites_tab():
     """Render the Favorites tab showing all bookmarked jobs."""
     st.markdown("### ⭐ Favorite Jobs")
@@ -1861,15 +1980,17 @@ def render_favorites_tab():
                 for uid in fav_df['uid']:
                     remove_favorite(uid)
                 st.session_state['confirm_clear_favorites'] = False
+                load_favorite_uids.clear()
                 st.success("✅ All favorites cleared!")
-                st.rerun()
+                st.rerun(scope="app")
             else:
                 st.session_state['confirm_clear_favorites'] = True
                 st.warning("⚠️ Click again to confirm clearing all favorites")
 
-    # Render favorite job cards
+    # Render favorite job cards (all are favorites, but pass set for consistency)
+    fav_uids = load_favorite_uids()
     for idx, row in fav_df.iterrows():
-        render_job_card(row)
+        render_job_card(row, fav_uids=fav_uids)
 
         # Notes section
         job_uid = row.get('uid', '')
@@ -2679,9 +2800,33 @@ def main():
     st.title("🎯 Upwork AI Jobs Dashboard")
     st.markdown("*Live dashboard for AI freelance opportunities*")
 
-    # Load data
+    # Compute SQL date range from session state (set by sidebar on previous run)
+    # Default to "Last 2 Days" on first load (matches sidebar default index=1)
+    date_mode = st.session_state.get("global_date_mode", "last_2")
+    start_date_str = None
+    end_date_str = None
+    now_bst = datetime.now(BST)
+
+    if date_mode == "last_2":
+        start_date_str = (now_bst - timedelta(days=2)).strftime("%Y-%m-%d")
+        end_date_str = now_bst.strftime("%Y-%m-%d")
+    elif date_mode == "last_7":
+        start_date_str = (now_bst - timedelta(days=7)).strftime("%Y-%m-%d")
+        end_date_str = now_bst.strftime("%Y-%m-%d")
+    elif date_mode == "last_30":
+        start_date_str = (now_bst - timedelta(days=30)).strftime("%Y-%m-%d")
+        end_date_str = now_bst.strftime("%Y-%m-%d")
+    elif date_mode == "custom":
+        custom_start = st.session_state.get("global_start_date")
+        custom_end = st.session_state.get("global_end_date")
+        if custom_start and custom_end:
+            start_date_str = custom_start.strftime("%Y-%m-%d") if hasattr(custom_start, 'strftime') else str(custom_start)
+            end_date_str = custom_end.strftime("%Y-%m-%d") if hasattr(custom_end, 'strftime') else str(custom_end)
+    # date_mode == "all": leave both None -> load all jobs
+
+    # Load data (SQL-filtered by date range when possible)
     with st.spinner("Loading jobs data..."):
-        df, jobs = load_jobs_data()
+        df, jobs = load_jobs_data(start_date_str, end_date_str)
 
     if df is None or df.empty:
         st.error("❌ No jobs in database. Run a scrape first:")

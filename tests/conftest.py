@@ -55,7 +55,9 @@ def tmp_db(tmp_path):
             summary TEXT DEFAULT '',
             categories TEXT DEFAULT '',
             key_tools TEXT DEFAULT '',
-            ai_summary TEXT DEFAULT ''
+            ai_summary TEXT DEFAULT '',
+            match_score REAL DEFAULT NULL,
+            match_reasons TEXT DEFAULT ''
         )
     """)
     conn.commit()

@@ -555,6 +555,9 @@ def _stage_classify(new_uids: set, dry_run: bool) -> tuple[int, str | None]:
 def _stage_match(new_uids: set) -> tuple[list, str | None]:
     """Stage 4: Match jobs against preferences.
 
+    Scores ALL new jobs and persists scores to DB, then returns only
+    those above threshold for proposal generation.
+
     Returns:
         Tuple of (matched_jobs_list, error_message_or_None).
     """
@@ -562,11 +565,30 @@ def _stage_match(new_uids: set) -> tuple[list, str | None]:
     log.info("Stage 4: Matching started")
 
     try:
-        from matcher import get_matching_jobs, load_preferences
+        from matcher import get_matching_jobs, load_preferences, score_job
+        from database.db import update_job_scores
+        import json as _json
 
         all_jobs = get_all_jobs()
         new_jobs = [job for job in all_jobs if job["uid"] in new_uids]
         preferences = load_preferences()
+
+        # Score ALL new jobs and persist to DB (so dashboard can read pre-computed scores)
+        all_scored = []
+        for job in new_jobs:
+            score, reasons = score_job(job, preferences)
+            all_scored.append({
+                "uid": job["uid"],
+                "match_score": score,
+                "match_reasons": _json.dumps(reasons),
+            })
+
+        if all_scored:
+            saved = update_job_scores(all_scored)
+            print(f"  Persisted scores for {saved} jobs to DB")
+            log.info(f"Persisted match scores for {saved} jobs")
+
+        # Get matching jobs (above threshold) for proposal generation
         matched_jobs = get_matching_jobs(new_jobs, preferences)
 
         print(f"  {len(matched_jobs)} jobs matched (threshold: {preferences.get('threshold', 70)})")

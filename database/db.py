@@ -15,12 +15,14 @@ from database.adapter import get_connection, is_postgres
 # Import error classes for both backends (psycopg2 may not be installed)
 _INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 _OPERATIONAL_ERRORS = (sqlite3.OperationalError,)
+_COLUMN_EXISTS_ERRORS = (sqlite3.OperationalError,)  # "duplicate column" on ALTER TABLE
 
 try:
     import psycopg2
 
     _INTEGRITY_ERRORS = _INTEGRITY_ERRORS + (psycopg2.IntegrityError,)
     _OPERATIONAL_ERRORS = _OPERATIONAL_ERRORS + (psycopg2.OperationalError,)
+    _COLUMN_EXISTS_ERRORS = _COLUMN_EXISTS_ERRORS + (psycopg2.OperationalError, psycopg2.ProgrammingError)
 except ImportError:
     pass
 
@@ -93,6 +95,8 @@ def _init_db_sqlite():
             ("categories", "TEXT DEFAULT ''"),
             ("key_tools", "TEXT DEFAULT ''"),
             ("ai_summary", "TEXT DEFAULT ''"),
+            ("match_score", "REAL DEFAULT NULL"),
+            ("match_reasons", "TEXT DEFAULT ''"),
         ]
         for col_name, col_def in _alter_columns:
             try:
@@ -156,6 +160,9 @@ def _init_db_sqlite():
         # Compound indexes for common query patterns
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proposals_status_generated "
@@ -237,9 +244,23 @@ def _init_db_postgres():
                 summary TEXT DEFAULT '',
                 categories TEXT DEFAULT '',
                 key_tools TEXT DEFAULT '',
-                ai_summary TEXT DEFAULT ''
+                ai_summary TEXT DEFAULT '',
+                match_score DOUBLE PRECISION DEFAULT NULL,
+                match_reasons TEXT DEFAULT ''
             )
         """)
+        # Add new columns to existing PG databases (idempotent)
+        for col_name, col_def in [
+            ("match_score", "DOUBLE PRECISION DEFAULT NULL"),
+            ("match_reasons", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE jobs ADD COLUMN {col_name} {col_def}"
+                )
+            except _COLUMN_EXISTS_ERRORS:
+                conn.rollback()  # PG requires rollback after failed ALTER
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_keyword ON jobs(keyword)"
         )
@@ -295,6 +316,9 @@ def _init_db_postgres():
         # Compound indexes for common query patterns
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_category ON jobs(category)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proposals_status_generated "
@@ -645,6 +669,73 @@ def get_classification_status() -> tuple[int, int]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Match Score Persistence
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def update_job_scores(scored_jobs: list[dict]) -> int:
+    """Batch update match_score and match_reasons for jobs.
+
+    Args:
+        scored_jobs: List of dicts with uid, match_score, match_reasons keys.
+
+    Returns:
+        Number of jobs updated.
+    """
+    conn = get_connection()
+    count = 0
+    try:
+        for job in scored_jobs:
+            uid = job.get("uid")
+            if not uid:
+                continue
+            match_score = job.get("match_score", 0)
+            match_reasons = job.get("match_reasons", "")
+            conn.execute(
+                "UPDATE jobs SET match_score=?, match_reasons=? WHERE uid=?",
+                (match_score, match_reasons, str(uid)),
+            )
+            count += 1
+        conn.commit()
+    except (sqlite3.Error, OSError) as e:
+        log.error(f"Batch score update failed, rolling back: {e}")
+        try:
+            conn.rollback()
+        except (sqlite3.Error, OSError):
+            pass
+        raise
+    finally:
+        conn.close()
+    return count
+
+
+def get_jobs_by_date_range(start_date: str, end_date: str) -> list[dict]:
+    """Get jobs within a posted_date_estimated range.
+
+    Uses the existing idx_jobs_posted index for efficient filtering.
+
+    Args:
+        start_date: Start date string (e.g. "2026-02-14").
+        end_date: End date string (e.g. "2026-02-16").
+
+    Returns:
+        List of job dicts ordered by posted_date_estimated DESC.
+    """
+    conn = get_connection()
+    try:
+        # end_date + "~" sorts after any time suffix on the same date
+        rows = conn.execute(
+            "SELECT * FROM jobs "
+            "WHERE posted_date_estimated >= ? AND posted_date_estimated <= ? "
+            "ORDER BY posted_date_estimated DESC",
+            (start_date, end_date + "~"),
+        ).fetchall()
+        return _rows_to_dicts(rows)
+    finally:
+        conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Proposals Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -766,6 +857,16 @@ def is_favorite(job_uid: str) -> bool:
             "SELECT 1 FROM favorites WHERE job_uid = ?", (job_uid,)
         ).fetchone()
         return result is not None
+    finally:
+        conn.close()
+
+
+def get_favorite_uids() -> set:
+    """Get UIDs of all favorited jobs. Returns a set for O(1) lookup."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT job_uid FROM favorites").fetchall()
+        return {row["job_uid"] for row in rows}
     finally:
         conn.close()
 
