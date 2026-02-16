@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
 
 # Load environment variables from .env file
 load_dotenv()
@@ -118,17 +118,33 @@ async def cmd_scrape_full():
                 # Memory cleanup every 5 keywords to prevent OOM (exit code 137)
                 if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
                     print(f"  🧹 Memory cleanup (processed {i+1} keywords)...")
-                    await page.close()
+                    try:
+                        await page.close()
+                    except (PlaywrightError, OSError):
+                        pass
                     import gc
                     gc.collect()
                     await asyncio.sleep(2)
-                    page = await get_page(browser)
+                    try:
+                        page = await get_page(browser)
+                    except (PlaywrightError, OSError) as e:
+                        log.warning(f"Browser died during cleanup, relaunching: {e}")
+                        print(f"  Browser crashed, relaunching Chrome...")
+                        try:
+                            await browser.close()
+                        except (PlaywrightError, OSError):
+                            pass
+                        browser, _ = await launch_chrome_and_connect(pw)
+                        page = await get_page(browser)
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
                     print("  ⏳ Cooling down between keywords...")
                     await human_delay(8, 15)
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except (PlaywrightError, OSError):
+                pass
 
     log.info(f"Full scrape complete: {total_new} new, {total_updated} updated, {get_job_count()} total")
     print(f"\n{'='*50}")
@@ -164,16 +180,32 @@ async def cmd_scrape_new():
                 # Memory cleanup every 5 keywords to prevent OOM
                 if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
                     print(f"  🧹 Memory cleanup (processed {i+1} keywords)...")
-                    await page.close()
+                    try:
+                        await page.close()
+                    except (PlaywrightError, OSError):
+                        pass
                     import gc
                     gc.collect()
                     await asyncio.sleep(2)
-                    page = await get_page(browser)
+                    try:
+                        page = await get_page(browser)
+                    except (PlaywrightError, OSError) as e:
+                        log.warning(f"Browser died during cleanup, relaunching: {e}")
+                        print(f"  Browser crashed, relaunching Chrome...")
+                        try:
+                            await browser.close()
+                        except (PlaywrightError, OSError):
+                            pass
+                        browser, _ = await launch_chrome_and_connect(pw)
+                        page = await get_page(browser)
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
                     await human_delay(6, 12)
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except (PlaywrightError, OSError):
+                pass
 
     log.info(f"Daily scrape complete: {total_new} new jobs, {get_job_count()} total")
     print(f"\n✓ Daily scrape: {total_new} new jobs found. Total in DB: {get_job_count()}")
@@ -510,16 +542,32 @@ async def _stage_scrape(existing_uids: set) -> tuple[int, int, set]:
                 # Memory cleanup every 5 keywords
                 if (i + 1) % 5 == 0 and i < len(config.KEYWORDS) - 1:
                     print(f"     Memory cleanup (processed {i+1} keywords)...")
-                    await page.close()
+                    try:
+                        await page.close()
+                    except (PlaywrightError, OSError):
+                        pass
                     import gc
                     gc.collect()
                     await asyncio.sleep(2)
-                    page = await get_page(browser)
+                    try:
+                        page = await get_page(browser)
+                    except (PlaywrightError, OSError) as e:
+                        log.warning(f"Browser died during cleanup, relaunching: {e}")
+                        print(f"     Browser crashed, relaunching Chrome...")
+                        try:
+                            await browser.close()
+                        except (PlaywrightError, OSError):
+                            pass
+                        browser, _ = await launch_chrome_and_connect(pw)
+                        page = await get_page(browser)
                     await warmup_cloudflare(page)
                 elif i < len(config.KEYWORDS) - 1:
                     await human_delay(6, 12)
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except (PlaywrightError, OSError):
+                pass
 
     print(f"  Scraped {jobs_scraped} jobs, {jobs_new} new")
     log.info(f"Stage 1 complete: {jobs_scraped} scraped, {jobs_new} new")
@@ -680,17 +728,32 @@ def _stage_notify(stats: dict, start_time: float):
         print(f"  Email notification failed: {e}")
 
 def _read_loop_interval() -> int:
-    """Read scheduler interval from scraping.yaml. Returns minutes (default 60)."""
+    """Read scheduler interval from DB (primary) or YAML (fallback). Returns minutes."""
     try:
-        import yaml
-        cfg_path = Path("config/scraping.yaml")
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                data = yaml.safe_load(f) or {}
-            return data.get("scraping", {}).get("scheduler", {}).get("interval_minutes", 60)
-    except (yaml.YAMLError, OSError) as e:
+        from config_loader import load_config
+        cfg = load_config("scraping", top_level_key="scraping", default={})
+        interval = cfg.get("scheduler", {}).get("interval_minutes", 60)
+        return int(interval)
+    except Exception as e:
         log.warning(f"Failed to read scheduler interval: {e}")
     return 60
+
+
+def _check_db_connection() -> bool:
+    """Verify DB is reachable. Returns True if OK, False if not."""
+    from database.adapter import is_postgres, get_connection
+    if not is_postgres():
+        return True  # SQLite always works
+    try:
+        conn = get_connection()
+        conn.execute("SELECT 1")
+        conn.close()
+        return True
+    except Exception as e:
+        log.error(f"Database connection failed: {e}")
+        print(f"\nDatabase unreachable: {e}")
+        print("Skipping this run — will retry next cycle.")
+        return False
 
 
 async def cmd_monitor_new(dry_run: bool = False):
@@ -702,6 +765,9 @@ async def cmd_monitor_new(dry_run: bool = False):
     start_time = time.time()
     init_db()
     setup_monitor_logging()
+
+    if not _check_db_connection():
+        return
 
     if not acquire_lock():
         return

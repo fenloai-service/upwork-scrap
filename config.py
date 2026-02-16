@@ -50,23 +50,7 @@ _DEFAULT_URL_TEMPLATE = (
     "&t=0,1"
 )
 
-_DEFAULT_KEYWORDS = [
-    "ai",
-    "machine learning",
-    "deep learning",
-    "NLP",
-    "computer vision",
-    "LLM",
-    "GPT",
-    "data science",
-    "generative AI",
-    "prompt engineering",
-    "RAG",
-    "fine-tuning",
-    "AI chatbot",
-    "neural network",
-    "transformer model",
-]
+_DEFAULT_KEYWORDS = []  # Managed via dashboard → DB. Empty = no scraping if DB unavailable.
 
 SEARCH_URL_TEMPLATE = _scraping_cfg.get("url_template", _DEFAULT_URL_TEMPLATE)
 KEYWORDS = _scraping_cfg.get("keywords", _DEFAULT_KEYWORDS)

@@ -1,21 +1,4 @@
 scraping:
-  keywords:
-  - ai
-  - machine learning
-  - deep learning
-  - NLP
-  - computer vision
-  - LLM
-  - GPT
-  - data science
-  - generative AI
-  - prompt engineering
-  - RAG
-  - fine-tuning
-  - AI chatbot
-  - neural network
-  - transformer model
-  url_template: https://www.upwork.com/nx/search/jobs/?q={keyword}&sort=recency&per_page=50&page={page}&amount=501-&contractor_tier=2,3&hourly_rate=30-&payment_verified=1&t=0,1
   safety:
     min_delay_seconds: 5
     max_delay_seconds: 12

@@ -130,7 +130,7 @@ class TestScrapingConfigLoading:
         assert "{page}" in config.SEARCH_URL_TEMPLATE
 
     def test_scraping_yaml_parses(self):
-        """config/scraping.yaml should parse correctly."""
+        """config/scraping.yaml should parse correctly (keywords managed via DB)."""
         import yaml
         import os
 
@@ -142,6 +142,6 @@ class TestScrapingConfigLoading:
             data = yaml.safe_load(f)
 
         assert "scraping" in data
-        assert "keywords" in data["scraping"]
+        # keywords and url_template are managed via DB, not YAML
         assert "duplicate_handling" in data["scraping"]
-        assert len(data["scraping"]["keywords"]) >= 15
+        assert "safety" in data["scraping"]

@@ -2788,6 +2788,21 @@ def render_scrape_history_tab():
         hide_index=True,
     )
 
+    # ── Error Details for Failed Runs ─────────────────────────────────
+    failed_runs = display_df[
+        (display_df["status"].isin(["failure", "partial_failure"]))
+        & (display_df["error"].notna())
+        & (display_df["error"] != "")
+    ]
+    if not failed_runs.empty:
+        st.subheader("Failed Runs")
+        for _, run in failed_runs.iterrows():
+            with st.expander(
+                f"{run['timestamp']} — {run['status']}",
+                expanded=False,
+            ):
+                st.code(run["error"], language="text")
+
 
 def main():
     """Main app entry point."""
