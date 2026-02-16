@@ -28,11 +28,6 @@ echo "[2/4] Copying config files..."
 scp "$LOCAL_DIR/.env" "$SERVER:$REMOTE_DIR/.env" 2>/dev/null || \
     echo "  WARNING: .env not found locally — create it on the server manually"
 
-# Streamlit secrets for dashboard DB access
-ssh "$SERVER" "mkdir -p $REMOTE_DIR/.streamlit"
-scp "$LOCAL_DIR/.streamlit/secrets.toml" "$SERVER:$REMOTE_DIR/.streamlit/secrets.toml" 2>/dev/null || \
-    echo "  WARNING: .streamlit/secrets.toml not found — dashboard may not connect to cloud DB"
-
 # Email config (contains SMTP credentials)
 scp "$LOCAL_DIR/config/email_config.yaml" "$SERVER:$REMOTE_DIR/config/email_config.yaml" 2>/dev/null || \
     echo "  WARNING: email_config.yaml not found"
@@ -69,18 +64,14 @@ cd /home/npc/upwork-scrap
 # Copy service files (requires prior sudo setup or passwordless sudo)
 sudo cp deploy/xvfb.service /etc/systemd/system/
 sudo cp deploy/upwork-scraper.service /etc/systemd/system/
-sudo cp deploy/upwork-dashboard.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
 # Enable and start services
-sudo systemctl enable xvfb.service upwork-scraper.service upwork-dashboard.service
+sudo systemctl enable xvfb.service upwork-scraper.service
 
 sudo systemctl restart xvfb.service
 echo "  Xvfb: $(sudo systemctl is-active xvfb.service)"
-
-sudo systemctl restart upwork-dashboard.service
-echo "  Dashboard: $(sudo systemctl is-active upwork-dashboard.service)"
 
 sudo systemctl restart upwork-scraper.service
 echo "  Scraper: $(sudo systemctl is-active upwork-scraper.service)"
@@ -88,6 +79,5 @@ REMOTE_SCRIPT
 
 echo ""
 echo "=== Deployment complete ==="
-echo "Dashboard: http://100.98.24.98:8501"
+echo "Dashboard: https://upwork-scrap-fenloai.streamlit.app/ (Streamlit Cloud — auto-deploys from GitHub)"
 echo "Scraper logs: ssh $SERVER 'journalctl -u upwork-scraper -f'"
-echo "Dashboard logs: ssh $SERVER 'journalctl -u upwork-dashboard -f'"

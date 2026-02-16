@@ -41,7 +41,8 @@ python main.py monitor --new --dry-run  # Test without sending emails
 python main.py monitor --new --loop     # Run continuously (interval from config/scraping.yaml)
 
 # Dashboard
-streamlit run dashboard/app.py         # Launch live dashboard (localhost:8501)
+streamlit run dashboard/app.py         # Launch local dashboard (localhost:8501)
+# Production dashboard: https://upwork-scrap-fenloai.streamlit.app/
 
 # Stats & health
 python main.py stats                   # Terminal summary
@@ -104,7 +105,6 @@ deploy/                 # Server deployment files
   deploy.sh             # Push code from local to server (rsync + pip + restart)
   xvfb.service          # systemd: virtual display :99
   upwork-scraper.service # systemd: monitor pipeline (--loop mode)
-  upwork-dashboard.service # systemd: Streamlit on :8501
   watchdog.sh           # Cron health check (auto-restart if stale)
 ```
 
@@ -222,16 +222,15 @@ Specific exception types are used throughout (no bare `except Exception` except 
 
 ## Production Deployment (NPC Server)
 
-The pipeline runs in production on the NPC Linux server. Full details in `docs/DEPLOYMENT_GUIDE.md`.
+The scraper pipeline runs in production on the NPC Linux server. The dashboard is hosted on **Streamlit Community Cloud** (not on the server). Full details in `docs/DEPLOYMENT_GUIDE.md`.
 
 **Server**: `npc@100.98.24.98` (Tailscale IP, password: `asdf`)
 **Project path**: `/home/npc/upwork-scrap`
-**Dashboard**: `http://100.98.24.98:8501`
+**Dashboard**: `https://upwork-scrap-fenloai.streamlit.app/` (Streamlit Cloud -- NOT hosted on NPC server)
 
 **Services** (all systemd, auto-start on boot):
 - `xvfb.service` -- virtual display `:99` for Chrome (Cloudflare bypass needs a visible browser)
 - `upwork-scraper.service` -- runs `main.py monitor --new --loop` with `DISPLAY=:99`
-- `upwork-dashboard.service` -- Streamlit on `0.0.0.0:8501`
 
 **SSH access** uses `sshpass` (password-based, matching existing setup in `Codes/npc/`):
 ```bash
@@ -239,7 +238,7 @@ sshpass -p "asdf" ssh npc@100.98.24.98              # Connect
 sshpass -p "asdf" ssh npc@100.98.24.98 'command'    # Run remote command
 ```
 
-**Deploying code updates**:
+**Deploying code updates** (scraper pipeline only):
 ```bash
 # 1. Rsync code (excludes .venv, data, .git, .env, .streamlit)
 sshpass -p "asdf" rsync -avz --delete \
@@ -252,22 +251,23 @@ sshpass -p "asdf" rsync -avz --delete \
 sshpass -p "asdf" ssh npc@100.98.24.98 \
     'cd /home/npc/upwork-scrap && .venv/bin/pip install -q -r requirements.txt'
 
-# 3. Restart services
+# 3. Restart scraper service
 sshpass -p "asdf" ssh npc@100.98.24.98 \
-    'echo "asdf" | sudo -S systemctl restart upwork-scraper upwork-dashboard'
+    'echo "asdf" | sudo -S systemctl restart upwork-scraper'
 ```
 
+**Dashboard deploys automatically** via Streamlit Cloud when code is pushed to GitHub. No server restart needed for dashboard changes.
+
 **Post-deployment verification (REQUIRED)**:
-After every deployment, you MUST open the live dashboard in a browser (using Playwright MCP) and verify the changes work:
-1. Navigate to `http://100.98.24.98:8501`
-2. Wait for the page to fully load (wait for "Loaded" text, may take 60-120s on cold start)
-3. Click through to the relevant tab(s) that were changed
-4. Take a screenshot to confirm the UI renders correctly
-5. Check server logs (`/var/log/upwork-scrap/dashboard.log`) if anything looks wrong
+After every deployment, verify the changes work:
+1. Navigate to `https://upwork-scrap-fenloai.streamlit.app/` in a browser (or use Playwright MCP)
+2. Click through to the relevant tab(s) that were changed
+3. Take a screenshot to confirm the UI renders correctly
+4. Check server logs (`/var/log/upwork-scrap/scraper.log`) for pipeline issues
 Never skip this step — silent failures in Streamlit are common (empty tabs, missing imports, DB errors).
 
 **Key server paths**:
-- Logs: `/var/log/upwork-scrap/scraper.log`, `dashboard.log`
+- Logs: `/var/log/upwork-scrap/scraper.log`
 - Chrome profile (Cloudflare tokens): `data/chrome_profile/`
 - Health status: `data/last_run_status.json`
 - Secrets: `.env` (DATABASE_URL, GROQ_API_KEY, GMAIL_APP_PASSWORD)

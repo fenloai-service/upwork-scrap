@@ -13,7 +13,7 @@
 | **Chrome** | Google Chrome Stable (system-installed) |
 | **Ollama** | v0.15.6, model: `qwen2.5:7b-instruct` |
 | **Database** | Neon PostgreSQL (cloud, via `DATABASE_URL` in `.env`) |
-| **Dashboard URL** | `http://100.98.24.98:8501` |
+| **Dashboard URL** | `https://upwork-scrap-fenloai.streamlit.app/` (Streamlit Cloud) |
 
 > **Tailscale required:** The server IP `100.98.24.98` is on Tailscale. You must have Tailscale connected on your local machine before SSH or accessing the dashboard.
 
@@ -37,14 +37,17 @@
 │  │ :11434   │                  & proposals)      │
 │  └──────────┘                                    │
 │                                                  │
-│  ┌──────────────────────────┐                    │
-│  │ upwork-dashboard.service │                    │
-│  │ Streamlit :8501          │──► http://...:8501 │
-│  └──────────────────────────┘                    │
-│                                                  │
 │  All services ──► Neon PostgreSQL (cloud DB)     │
 └─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│  Streamlit Community Cloud                      │
+│  https://upwork-scrap-fenloai.streamlit.app/    │
+│  (auto-deploys from GitHub, reads same cloud DB)│
+└─────────────────────────────────────────────────┘
 ```
+
+> **Note:** The dashboard is NOT hosted on the NPC server. It runs on Streamlit Community Cloud and auto-deploys when code is pushed to GitHub.
 
 ---
 
@@ -67,9 +70,8 @@ ssh npc@100.98.24.98
 ### Service Management
 
 ```bash
-# Check status of all services
+# Check status of services
 sudo systemctl status upwork-scraper
-sudo systemctl status upwork-dashboard
 sudo systemctl status xvfb
 
 # Restart scraper (triggers immediate new run)
@@ -80,9 +82,6 @@ sudo systemctl stop upwork-scraper
 
 # Start scraper
 sudo systemctl start upwork-scraper
-
-# Same for dashboard
-sudo systemctl restart upwork-dashboard
 ```
 
 ### Viewing Logs
@@ -94,12 +93,8 @@ tail -f /var/log/upwork-scrap/scraper.log
 # Last 100 lines of scraper log
 tail -100 /var/log/upwork-scrap/scraper.log
 
-# Dashboard logs
-tail -f /var/log/upwork-scrap/dashboard.log
-
 # systemd journal (alternative)
 sudo journalctl -u upwork-scraper -f
-sudo journalctl -u upwork-dashboard -f
 
 # Last run status (JSON)
 cat /home/npc/upwork-scrap/data/last_run_status.json
@@ -111,16 +106,15 @@ cat /home/npc/upwork-scrap/data/last_run_status.json
 # Is everything running?
 echo "Xvfb:      $(systemctl is-active xvfb)"
 echo "Scraper:   $(systemctl is-active upwork-scraper)"
-echo "Dashboard: $(systemctl is-active upwork-dashboard)"
-
-# Dashboard responding?
-curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8501
 
 # Ollama running?
 ollama list
 
 # Last pipeline result
 cat data/last_run_status.json
+
+# Dashboard is on Streamlit Cloud — check at:
+# https://upwork-scrap-fenloai.streamlit.app/
 ```
 
 ---
@@ -150,9 +144,9 @@ sshpass -p "asdf" rsync -avz --delete \
 sshpass -p "asdf" ssh npc@100.98.24.98 \
     'cd /home/npc/upwork-scrap && .venv/bin/pip install -q -r requirements.txt'
 
-# 3. Restart services to pick up changes
+# 3. Restart scraper service to pick up changes
 sshpass -p "asdf" ssh npc@100.98.24.98 \
-    'echo "asdf" | sudo -S systemctl restart upwork-scraper upwork-dashboard'
+    'echo "asdf" | sudo -S systemctl restart upwork-scraper'
 ```
 
 ### What Gets Synced
@@ -182,9 +176,9 @@ sshpass -p "asdf" scp .streamlit/secrets.toml \
 sshpass -p "asdf" scp config/email_config.yaml \
     npc@100.98.24.98:/home/npc/upwork-scrap/config/email_config.yaml
 
-# Restart services after secret changes
+# Restart scraper after secret changes
 sshpass -p "asdf" ssh npc@100.98.24.98 \
-    'echo "asdf" | sudo -S systemctl restart upwork-scraper upwork-dashboard'
+    'echo "asdf" | sudo -S systemctl restart upwork-scraper'
 ```
 
 ### Updating systemd Service Files
@@ -195,10 +189,9 @@ If you modify anything in `deploy/*.service`:
 # After rsync, install the updated service files
 sshpass -p "asdf" ssh npc@100.98.24.98 'echo "asdf" | sudo -S bash -c "
     cp /home/npc/upwork-scrap/deploy/upwork-scraper.service /etc/systemd/system/
-    cp /home/npc/upwork-scrap/deploy/upwork-dashboard.service /etc/systemd/system/
     cp /home/npc/upwork-scrap/deploy/xvfb.service /etc/systemd/system/
     systemctl daemon-reload
-    systemctl restart upwork-scraper upwork-dashboard
+    systemctl restart upwork-scraper
 "'
 ```
 
@@ -257,7 +250,7 @@ GMAIL_APP_PASSWORD=...                 # Gmail SMTP for email notifications
 | `email_config.yaml` | SMTP settings, recipient email |
 | `projects.yaml` | Portfolio projects referenced in proposals |
 
-All configs can be edited via the **dashboard Settings tab** at `http://100.98.24.98:8501`.
+All configs can be edited via the **dashboard Settings tab** at `https://upwork-scrap-fenloai.streamlit.app/`.
 
 ### Changing the Loop Interval
 
@@ -324,18 +317,12 @@ sudo journalctl -u upwork-scraper -n 50 --no-pager
 
 ### Dashboard not loading
 
-```bash
-# Check status
-sudo systemctl status upwork-dashboard
+The dashboard runs on Streamlit Community Cloud at `https://upwork-scrap-fenloai.streamlit.app/`.
 
-# Check logs
-tail -30 /var/log/upwork-scrap/dashboard.log
-
-# Common causes:
-# 1. Port 8501 blocked → check firewall: sudo ufw status
-# 2. DB connection → check .streamlit/secrets.toml
-# 3. Crash → sudo systemctl restart upwork-dashboard
-```
+Common causes:
+1. **DB connection issue** → Check Streamlit Cloud secrets (managed via Streamlit Cloud dashboard)
+2. **Code error** → Check Streamlit Cloud logs at `https://share.streamlit.io/`
+3. **GitHub sync** → Ensure latest code is pushed to GitHub (Streamlit Cloud auto-deploys from repo)
 
 ### Ollama errors
 
@@ -422,13 +409,14 @@ crontab -e
 
 /var/log/upwork-scrap/
 ├── scraper.log                   # Scraper pipeline output
-├── dashboard.log                 # Streamlit output
 └── watchdog.log                  # Watchdog cron output (if enabled)
 
 /etc/systemd/system/
 ├── xvfb.service                  # Virtual display
-├── upwork-scraper.service        # Scraper pipeline
-└── upwork-dashboard.service      # Streamlit dashboard
+└── upwork-scraper.service        # Scraper pipeline
+
+# Dashboard is on Streamlit Cloud (not on this server)
+# https://upwork-scrap-fenloai.streamlit.app/
 ```
 
 ---
