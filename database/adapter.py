@@ -79,18 +79,46 @@ def _get_or_create_pool():
             minconn=1,
             maxconn=5,
             dsn=url,
+            # TCP keepalive to prevent Neon from closing idle SSL connections
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
         log.info("PostgreSQL connection pool created (1-5 connections)")
         return _pg_pool
 
 
+def _is_conn_alive(conn):
+    """Check if a PostgreSQL connection is still usable."""
+    try:
+        conn.cursor().execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
 def _get_pooled_postgres_connection():
-    """Get a PostgreSQL connection from the pool, wrapped for SQLite-compatible interface."""
+    """Get a PostgreSQL connection from the pool, wrapped for SQLite-compatible interface.
+
+    Validates the connection is alive before returning. If the pooled connection
+    was closed by Neon (serverless PG drops idle SSL connections), it is discarded
+    and a fresh one is obtained.
+    """
     from psycopg2.extras import RealDictCursor
 
     pool = _get_or_create_pool()
     raw_conn = pool.getconn()
-    # Set cursor factory on the connection
+
+    # Validate connection — Neon closes idle SSL connections after ~5 min
+    if not _is_conn_alive(raw_conn):
+        log.warning("Stale PostgreSQL connection detected, replacing")
+        try:
+            pool.putconn(raw_conn, close=True)
+        except Exception:
+            pass
+        raw_conn = pool.getconn()
+
     raw_conn.cursor_factory = RealDictCursor
     return _PooledPGConnectionWrapper(raw_conn, pool)
 
@@ -120,11 +148,30 @@ class _PooledPGConnectionWrapper:
         self._pool = pool
 
     def execute(self, sql, params=None):
-        """Execute SQL, converting ? placeholders to %s for PostgreSQL."""
+        """Execute SQL, converting ? placeholders to %s for PostgreSQL.
+
+        Retries once on connection errors (e.g. Neon closing idle SSL connections).
+        """
+        import psycopg2
+
         sql = _convert_placeholders(sql)
-        cursor = self._conn.cursor()
-        cursor.execute(sql, params)
-        return cursor
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(sql, params)
+            return cursor
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            log.warning("Connection lost during execute, reconnecting: %s", e)
+            # Get a fresh connection from the pool
+            try:
+                self._pool.putconn(self._conn, close=True)
+            except Exception:
+                pass
+            self._conn = self._pool.getconn()
+            from psycopg2.extras import RealDictCursor
+            self._conn.cursor_factory = RealDictCursor
+            cursor = self._conn.cursor()
+            cursor.execute(sql, params)
+            return cursor
 
     def commit(self):
         self._conn.commit()
