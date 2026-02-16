@@ -215,10 +215,9 @@ def load_proposals_data():
         return []
 
 
-# Cache disabled temporarily to ensure fresh data after date migration
-# @st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_jobs_data(start_date_str=None, end_date_str=None):
-    """Load and prepare jobs data (cache temporarily disabled).
+    """Load and prepare jobs data with caching.
 
     Args:
         start_date_str: Optional start date (YYYY-MM-DD) for SQL filtering.
@@ -1006,26 +1005,38 @@ def render_jobs_tab(df, filters):
                 st.rerun()
 
 
-def render_job_card(row, idx: int, fav_uids=None):
-    """Render a job card with all details."""
-    score = row.get('score', 0)
-    url = f"https://www.upwork.com{row['url']}" if not row['url'].startswith('http') else row['url']
+def render_job_card(row, fav_uids=None):
+    """Render a single job card with expandable details.
 
-    # Dynamic color based on score
+    Args:
+        row: Job data (DataFrame row or dict-like).
+        fav_uids: Set of favorited job UIDs for O(1) lookup.
+                  If None, falls back to per-card is_favorite() query.
+    """
+    score = row['score']
+
+    # Determine score badge color
     if score >= 70:
-        score_color, border_color = "🟢", "#4caf50"
-    elif score >= 50:
-        score_color, border_color = "🟡", "#ff9800"
+        score_color = "🟢"
+        border_color = "#14a800"
+    elif score >= 40:
+        score_color = "🟡"
+        border_color = "#f57c00"
     else:
-        score_color, border_color = "🔴", "#f44336"
+        score_color = "⚪"
+        border_color = "#dee2e6"
+
+    # Build URL
+    url = row.get('url', '')
+    if url and not url.startswith('http'):
+        url = f"https://www.upwork.com{url}"
 
     # Budget string
     budget_str = ""
-    if row['job_type'] == "Fixed Price" and pd.notna(row.get('fixed_price')):
-        budget_str = f"${row['fixed_price']:.0f}"
-    elif row['job_type'] == "Hourly":
-        if pd.notna(row.get('hourly_rate_min')):
-            budget_str = f"${row['hourly_rate_min']:.0f}/hr"
+    if row['job_type'] == 'Fixed' and pd.notna(row.get('fixed_price')):
+        budget_str = f"${row['fixed_price']:,.0f}"
+    elif row['job_type'] == 'Hourly' and pd.notna(row.get('hourly_rate_min')):
+        budget_str = f"${row['hourly_rate_min']:.0f}/hr"
         if pd.notna(row.get('hourly_rate_max')):
             budget_str += f" - ${row['hourly_rate_max']:.0f}/hr"
 
@@ -1098,37 +1109,21 @@ def render_job_card(row, idx: int, fav_uids=None):
         key_tools = row.get('key_tools', [])
         if key_tools:
             tool_badges = " ".join([f"<span style='background: #e8f5e9; color: #1b5e20; "
-                                   f"padding: 4px 12px; border-radius: 12px; "
-                                   f"font-size: 12px; font-weight: bold; margin-right: 6px;'>🔧 {tool}</span>"
+                                   f"padding: 5px 12px; border-radius: 8px; "
+                                   f"font-size: 11px; font-weight: 600; "
+                                   f"border: 1px solid #c5e1a5; margin-right: 6px;'>{tool}</span>"
                                    for tool in key_tools[:5]])
             st.markdown(tool_badges, unsafe_allow_html=True)
 
-        # Skills
-        skills = row.get('skills', [])
-        if skills:
-            skill_badges = " ".join([f"<span style='background: #f3e5f5; color: #4a148c; "
-                                    f"padding: 4px 12px; border-radius: 12px; "
-                                    f"font-size: 12px; margin-right: 6px;'>{skill}</span>"
-                                    for skill in skills[:10]])
-            st.markdown(skill_badges, unsafe_allow_html=True)
+        # Expandable description
+        with st.expander("📄 View Full Description"):
+            st.markdown(row.get('description', 'No description available.'))
 
-        # Description
-        description = row.get('description', '')
-        if description:
-            with st.expander("📄 Full Description"):
-                st.markdown(description)
-
-        # Client Info
-        client_info_parts = []
-        if pd.notna(row.get('client_location')):
-            client_info_parts.append(f"📍 {row['client_location']}")
-        if pd.notna(row.get('client_spent')):
-            client_info_parts.append(f"💰 Spent: {row['client_spent']}")
-        if pd.notna(row.get('client_rating')):
-            client_info_parts.append(f"⭐ {row['client_rating']}")
-
-        if client_info_parts:
-            st.markdown(" • ".join(client_info_parts))
+            # Skills
+            skills = row.get('skills_list', [])
+            if skills:
+                st.markdown("**Skills:**")
+                st.markdown(", ".join(skills[:20]))
 
         st.markdown("</div>", unsafe_allow_html=True)
 
