@@ -34,6 +34,12 @@ def estimate_date(posted_text: str) -> str:
     if "yesterday" in text:
         return (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # Handle "last week", "last month" (without numbers)
+    if text in ["last week", "a week ago"]:
+        return (now - timedelta(weeks=1)).strftime("%Y-%m-%d")
+    if text in ["last month", "a month ago"]:
+        return (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
     # Match patterns like "2 minutes ago", "3 hours ago", "5 days ago"
     m = re.search(r"(\d+)\s*(minute|hour|day|week|month)s?\s*ago", text)
     if m:
