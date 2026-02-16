@@ -43,11 +43,12 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
     Returns:
         HTML string for email body
     """
+    # Extract stats - focus on NEW items from this run
     jobs_scraped = monitor_stats.get('jobs_scraped', 0)
     jobs_new = monitor_stats.get('jobs_new', 0)
     jobs_classified = monitor_stats.get('jobs_classified', 0)
-    jobs_matched = monitor_stats.get('jobs_matched', 0)
-    proposals_generated = monitor_stats.get('proposals_generated', 0)
+    jobs_matched = monitor_stats.get('jobs_matched', 0)  # NEW matched jobs in this run
+    proposals_generated = monitor_stats.get('proposals_generated', 0)  # NEW proposals in this run
     duration_seconds = monitor_stats.get('duration_seconds', 0)
     duration_str = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s" if duration_seconds else "N/A"
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -106,32 +107,31 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
             skills_list = []
         skills_html = ""
         if skills_list:
-            skills_display = skills_list[:5]  # First 5 skills
-            skills_tags = " ".join([f'<span style="background:#e3f2fd;padding:4px 8px;border-radius:4px;font-size:11px;display:inline-block;margin:2px;">{html.escape(s)}</span>' for s in skills_display])
-            skills_html = f'<div style="margin-top:8px;">{skills_tags}</div>'
+            skills_display = skills_list[:6]  # First 6 skills
+            skills_tags = " ".join([f'<span style="background:#f3f4f6;padding:5px 10px;border-radius:4px;font-size:11px;display:inline-block;margin:3px 4px 3px 0;color:#374151;">{html.escape(s)}</span>' for s in skills_display])
+            skills_html = f'<div style="margin-top:10px;">{skills_tags}</div>'
 
         # Client info
         client_html = ""
         client_country = job.get('client_country', '')
         client_spent = job.get('client_total_spent', '')
         client_rating = job.get('client_rating', '')
-        if client_country or client_spent:
+        if client_country or client_spent or client_rating:
             client_info_parts = []
             if client_country:
                 client_info_parts.append(f"📍 {html.escape(client_country)}")
             if client_spent:
-                client_info_parts.append(f"💳 {html.escape(client_spent)} spent")
+                client_info_parts.append(f"${html.escape(client_spent)}")
             if client_rating:
                 client_info_parts.append(f"⭐ {html.escape(client_rating)}")
-            client_html = f'<div style="margin-top:8px;font-size:12px;color:#666;">{" · ".join(client_info_parts)}</div>'
+            client_html = f'<div style="margin-top:10px;font-size:12px;color:#6b7280;">{" · ".join(client_info_parts)}</div>'
 
-        # AI summary
+        # AI summary (most important content)
         ai_summary = job.get('ai_summary', '')
         ai_summary_html = ""
         if ai_summary:
             ai_summary_escaped = html.escape(ai_summary)
-            ai_summary_html = f'''<div style="background:white;padding:12px;border-radius:6px;font-size:13px;color:#333;margin-top:10px;border:1px solid #e0e0e0;">
-                <strong style="color:#1976d2;">🤖 AI Summary:</strong><br>
+            ai_summary_html = f'''<div style="background:#f9fafb;padding:14px;border-radius:6px;font-size:13px;color:#374151;margin-top:12px;line-height:1.6;">
                 {ai_summary_escaped}
             </div>'''
 
@@ -139,19 +139,19 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         job_meta_parts = []
         experience = job.get('experience_level', '')
         if experience:
-            job_meta_parts.append(f"📊 {html.escape(experience)}")
+            job_meta_parts.append(html.escape(experience))
         est_time = job.get('est_time', '')
         if est_time:
-            job_meta_parts.append(f"⏱️ {html.escape(est_time)}")
+            job_meta_parts.append(html.escape(est_time))
         proposals_count = job.get('proposals', '')
         if proposals_count:
-            job_meta_parts.append(f"👥 {html.escape(proposals_count)} proposals")
+            job_meta_parts.append(f"{html.escape(proposals_count)} proposals")
         posted_text = job.get('posted_text', '')
         if posted_text:
-            job_meta_parts.append(f"🕐 {html.escape(posted_text)}")
+            job_meta_parts.append(html.escape(posted_text))
         job_meta_html = ""
         if job_meta_parts:
-            job_meta_html = f'<div style="margin-top:8px;font-size:12px;color:#555;">{" · ".join(job_meta_parts)}</div>'
+            job_meta_html = f'<div style="font-size:12px;color:#6b7280;">{" · ".join(job_meta_parts)}</div>'
 
         # Key tools from AI classification
         key_tools_raw = job.get('key_tools', '')
@@ -161,51 +161,50 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
             key_tools_list = []
         key_tools_html = ""
         if key_tools_list:
-            tools_display = key_tools_list[:6]
-            tools_tags = " ".join([f'<span style="background:#fff3e0;padding:4px 8px;border-radius:4px;font-size:11px;display:inline-block;margin:2px;color:#e65100;">{html.escape(t)}</span>' for t in tools_display])
-            key_tools_html = f'<div style="margin-top:8px;"><strong style="font-size:11px;color:#888;">KEY TOOLS:</strong> {tools_tags}</div>'
+            tools_display = key_tools_list[:5]
+            tools_tags = " ".join([f'<span style="background:#fef3c7;padding:5px 10px;border-radius:4px;font-size:11px;display:inline-block;margin:3px 4px 3px 0;color:#92400e;font-weight:500;">{html.escape(t)}</span>' for t in tools_display])
+            key_tools_html = f'<div style="margin-top:10px;">{tools_tags}</div>'
 
-        # Score color
-        score_color = "#14a800" if match_score >= 70 else ("#f57c00" if match_score >= 40 else "#9e9e9e")
+        # Score badge color
+        score_color = "#14a800" if match_score >= 70 else ("#f59e0b" if match_score >= 40 else "#6b7280")
+        score_bg = "#ecfdf5" if match_score >= 70 else ("#fef3c7" if match_score >= 40 else "#f3f4f6")
 
         proposal_cards += f"""
-        <div style="border-left: 4px solid {score_color}; padding: 16px; margin-bottom: 20px;
-                    background: #f8f9fa; border-radius: 8px;">
-            <!-- Header with title and score -->
+        <div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 16px;
+                    background: white;">
+            <!-- Header -->
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                 <div style="flex: 1;">
-                    <h3 style="margin: 0 0 6px 0; font-size: 18px;">
-                        <a href="{job_url}" style="color: #1976d2; text-decoration: none;">{job_title}</a>
+                    <h3 style="margin: 0 0 8px 0; font-size: 16px; font-weight: 600; line-height: 1.4;">
+                        <a href="{job_url}" style="color: #111827; text-decoration: none;">{job_title}</a>
                     </h3>
-                    {f'<div style="font-size:13px;color:#666;margin-bottom:4px;">{budget_html}</div>' if budget_html else ''}
+                    {f'<div style="font-size:14px;color:#1976d2;font-weight:500;">{budget_html}</div>' if budget_html else ''}
                 </div>
-                <div style="font-size: 24px; font-weight: bold; color: {score_color}; margin-left: 12px;">
-                    🎯 {match_score:.0f}
+                <div style="background: {score_bg}; color: {score_color}; padding: 6px 12px; border-radius: 6px;
+                           font-size: 14px; font-weight: 600; margin-left: 16px; white-space: nowrap;">
+                    {match_score:.0f}% Match
                 </div>
             </div>
 
             <!-- Job metadata -->
             {job_meta_html}
 
-            <!-- Job description -->
-            {f'<div style="background:#fff;padding:10px;border-radius:6px;font-size:13px;color:#555;margin-top:8px;border-left:3px solid #e0e0e0;">{description_preview}</div>' if description_preview else ''}
-
-            <!-- AI Summary -->
+            <!-- AI Summary (most important) -->
             {ai_summary_html}
 
-            <!-- Skills -->
+            <!-- Skills (condensed) -->
             {skills_html}
 
-            <!-- Key tools -->
+            <!-- Key tools (condensed) -->
             {key_tools_html}
 
             <!-- Client info -->
             {client_html}
 
-            <!-- Action button -->
-            <div style="margin-top: 12px; text-align: center;">
-                <a href="{dashboard_url}" style="display:inline-block;background:#1976d2;color:white;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
-                    Review & Submit in Dashboard →
+            <!-- Action - just a link, no big button in card -->
+            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #f3f4f6;">
+                <a href="{job_url}" style="color: #1976d2; text-decoration: none; font-weight: 500; font-size: 13px;">
+                    View Job on Upwork →
                 </a>
             </div>
         </div>
@@ -213,14 +212,17 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
 
     if remaining > 0:
         proposal_cards += f"""
-        <div style="padding: 16px; background: #e3f2fd; border-radius: 8px; text-align: center;">
-            <strong>+ {remaining} more proposal(s)</strong>
-            <br>
-            <a href="{dashboard_url}" style="color: #1976d2; font-weight: 600; text-decoration: none;">View all in Dashboard →</a>
+        <div style="padding: 20px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; text-align: center; margin-top: 8px;">
+            <div style="font-size: 14px; color: #6b7280; margin-bottom: 8px;">
+                + {remaining} more proposal{'' if remaining == 1 else 's'} waiting in your dashboard
+            </div>
+            <a href="{dashboard_url}" style="display: inline-block; color: #1976d2; font-weight: 500; text-decoration: none; font-size: 13px;">
+                View All Proposals →
+            </a>
         </div>
         """
 
-    # Full HTML email
+    # Full HTML email with clean, minimal design
     email_html = f"""
     <!DOCTYPE html>
     <html>
@@ -229,77 +231,58 @@ def generate_proposal_html(proposals: List[Dict], monitor_stats: Dict) -> str:
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                 background: #f5f5f5; margin: 0; padding: 20px;">
-        <div style="max-width: 700px; margin: 0 auto; background: white; border-radius: 12px;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.1); overflow: hidden;">
+                 background: #f9fafb; margin: 0; padding: 20px;">
+        <div style="max-width: 650px; margin: 0 auto; background: white; border-radius: 8px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden;">
 
-            <!-- Header -->
-            <div style="background: linear-gradient(135deg, #1976d2 0%, #14a800 100%);
-                        padding: 30px; color: white; text-align: center;">
-                <h1 style="margin: 0; font-size: 28px;">🎯 New Upwork Proposals Ready!</h1>
-                <p style="margin: 10px 0 0 0; opacity: 0.95; font-size: 14px;">
-                    Monitor run completed at {timestamp}
-                </p>
+            <!-- Hero Header -->
+            <div style="background: #1976d2; padding: 32px 24px; color: white;">
+                <div style="font-size: 14px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.9; margin-bottom: 8px;">
+                    Upwork Monitor · {timestamp}
+                </div>
+                <h1 style="margin: 0; font-size: 24px; font-weight: 600; line-height: 1.3;">
+                    {proposals_generated} New Proposal{'' if proposals_generated == 1 else 's'} Ready for Review
+                </h1>
+                {f'<p style="margin: 12px 0 0 0; font-size: 15px; opacity: 0.95;">{jobs_matched} matching job{'' if jobs_matched == 1 else 's'} found in this scan</p>' if jobs_matched > 0 else ''}
             </div>
 
-            <!-- Pipeline Summary -->
-            <div style="padding: 20px; background: #fafafa; border-bottom: 1px solid #eee;">
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #546e7a;">
-                            {jobs_scraped}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Scraped</div>
+            <!-- Quick Stats (This Run Only) -->
+            <div style="padding: 20px 24px; background: #f8f9fa; border-bottom: 1px solid #e5e7eb;">
+                <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
+                    This Run Summary
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 16px;">
+                    {f'<div><div style="font-size: 20px; font-weight: 600; color: #0288d1;">{jobs_new}</div><div style="font-size: 11px; color: #6b7280; margin-top: 2px;">New Jobs</div></div>' if jobs_new > 0 else ''}
+                    {f'<div><div style="font-size: 20px; font-weight: 600; color: #7b1fa2;">{jobs_classified}</div><div style="font-size: 11px; color: #6b7280; margin-top: 2px;">Classified</div></div>' if jobs_classified > 0 else ''}
+                    <div>
+                        <div style="font-size: 20px; font-weight: 600; color: #1976d2;">{jobs_matched}</div>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;">Matched</div>
                     </div>
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #0288d1;">
-                            {jobs_new}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">New Jobs</div>
+                    <div>
+                        <div style="font-size: 20px; font-weight: 600; color: #14a800;">{proposals_generated}</div>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;">Generated</div>
                     </div>
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #7b1fa2;">
-                            {jobs_classified}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Classified</div>
-                    </div>
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #1976d2;">
-                            {jobs_matched}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Matched</div>
-                    </div>
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #14a800;">
-                            {proposals_generated}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Proposals</div>
-                    </div>
-                    <div style="text-align: center; padding: 12px; background: white; border-radius: 8px;">
-                        <div style="font-size: 28px; font-weight: bold; color: #f57c00;">
-                            {duration_str}
-                        </div>
-                        <div style="color: #888; font-size: 12px; margin-top: 4px;">Duration</div>
+                    <div>
+                        <div style="font-size: 20px; font-weight: 600; color: #6b7280;">{duration_str}</div>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;">Duration</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Proposals -->
-            <div style="padding: 20px;">
-                <h2 style="margin: 0 0 20px 0; font-size: 20px; color: #333;">
-                    📝 Generated Proposals
-                </h2>
+            <!-- Proposals Section -->
+            <div style="padding: 24px;">
+                {f'<div style="margin-bottom: 20px;"><h2 style="margin: 0; font-size: 16px; font-weight: 600; color: #111827;">Top {len(shown_proposals)} Proposal{'' if len(shown_proposals) == 1 else 's'}</h2><p style="margin: 4px 0 0 0; font-size: 13px; color: #6b7280;">Review and submit from your dashboard</p></div>' if shown_proposals else ''}
                 {proposal_cards}
             </div>
 
             <!-- Footer -->
-            <div style="padding: 20px; background: #fafafa; text-align: center; border-top: 1px solid #eee;">
-                <p style="margin: 0; color: #666; font-size: 13px;">
-                    Generated by <strong>Upwork Proposal Monitor</strong>
-                    <br>
-                    <a href="{dashboard_url}" style="color: #1976d2; text-decoration: none; font-weight: 600;">
-                        🚀 Open Dashboard →
-                    </a>
+            <div style="padding: 24px; background: #f9fafb; text-align: center; border-top: 1px solid #e5e7eb;">
+                <a href="{dashboard_url}" style="display: inline-block; background: #1976d2; color: white;
+                   padding: 12px 32px; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 14px;">
+                    Open Dashboard
+                </a>
+                <p style="margin: 16px 0 0 0; color: #9ca3af; font-size: 12px;">
+                    Upwork Proposal Monitor · Automated by AI
                 </p>
             </div>
         </div>
@@ -456,8 +439,15 @@ def send_notification(
         print(f"📧 Not sending email: {len(proposals)} proposals < minimum {min_proposals}")
         return True
 
-    # Generate email content
-    subject = f"🎯 {len(proposals)} New Upwork Proposal(s) Ready for Review"
+    # Generate email content - focus on NEW proposals from this run
+    new_proposals = monitor_stats.get('proposals_generated', len(proposals))
+    new_matches = monitor_stats.get('jobs_matched', 0)
+
+    if new_proposals > 0:
+        subject = f"🎯 {new_proposals} New Proposal{'' if new_proposals == 1 else 's'} · {new_matches} Job{'' if new_matches == 1 else 's'} Matched"
+    else:
+        subject = f"✅ Monitor Complete · {new_matches} Job{'' if new_matches == 1 else 's'} Matched"
+
     html_body = generate_proposal_html(proposals, monitor_stats)
 
     # Try SMTP first
